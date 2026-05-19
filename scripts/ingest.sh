@@ -283,6 +283,48 @@ while IFS= read -r -d '' filepath; do
       COUNT_OK=$((COUNT_OK+1))
       ;;
 
+    epub)
+      log "EPUB → md: $filename"
+      if pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
+        add_frontmatter "$out_path" "$filepath" "txt"
+        COUNT_OK=$((COUNT_OK+1))
+      else
+        warn "pandoc не смог обработать epub: $filename"
+        COUNT_SKIP=$((COUNT_SKIP+1))
+      fi
+      ;;
+
+    fb2)
+      log "FB2 → md: $filename"
+      if pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
+        add_frontmatter "$out_path" "$filepath" "txt"
+        COUNT_OK=$((COUNT_OK+1))
+      else
+        warn "pandoc не смог обработать fb2: $filename"
+        COUNT_SKIP=$((COUNT_SKIP+1))
+      fi
+      ;;
+
+    mobi)
+      log "MOBI → md: $filename"
+      if command -v ebook-convert &>/dev/null; then
+        local tmp_epub; tmp_epub="$(mktemp).epub"
+        if ebook-convert "$filepath" "$tmp_epub" 2>/dev/null \
+            && pandoc "$tmp_epub" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
+          rm -f "$tmp_epub"
+          add_frontmatter "$out_path" "$filepath" "txt"
+          COUNT_OK=$((COUNT_OK+1))
+        else
+          rm -f "$tmp_epub"
+          warn "Не удалось конвертировать mobi: $filename"
+          COUNT_SKIP=$((COUNT_SKIP+1))
+        fi
+      else
+        warn "Пропускаю mobi (установи Calibre для поддержки): $filename"
+        COUNT_SKIP=$((COUNT_SKIP+1))
+      fi
+      ;;
+
     7z|zip|rar|tar|gz)
       warn "Пропускаю архив: $filename"
       COUNT_SKIP=$((COUNT_SKIP+1))

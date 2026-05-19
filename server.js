@@ -58,6 +58,7 @@ function computeAutoMaxChars(model) {
 if (process.platform === 'win32') {
   const extraPaths = [
     'C:\\Program Files\\Git\\usr\\bin',
+    'C:\\Program Files\\Git\\mingw64\\bin',  // pdftotext, poppler tools
     'C:\\Program Files (x86)\\Git\\usr\\bin',
     join(__dirname, 'scripts'),
     // pandoc installs to user AppData on Windows
