@@ -144,7 +144,7 @@ _content_is_cyrillic() {
     (( count++ ))
   done < <(find "$RAW_JIRA" -name "*.md" -type f -print0)
   local cyr
-  cyr="$(printf '%s' "$body" | "$PYTHON" -c 'import sys; t=sys.stdin.read(); print(sum(1 for c in t if "Ѐ"<=c<="ӿ"))')"
+  cyr="$(printf '%s' "$body" | "$PYTHON" -c 'import sys; t=sys.stdin.buffer.read().decode("utf-8", errors="replace"); print(sum(1 for c in t if "Ѐ"<=c<="ӿ"))')"
   [[ "$cyr" =~ ^[0-9]+$ ]] && (( cyr > 100 ))
 }
 
@@ -268,35 +268,72 @@ $content"
   ) &
   local HB_PID=$!
 
-  local full_response="" tok dots=0
-  while IFS= read -r line; do
-    if [[ -f "$skip_flag" ]]; then
-      rm -f "$skip_flag"
-      touch "$skipped_flag"
-      kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null
-      printf "\n[skipped]\n" >&2
-      return
-    fi
-    tok="$(printf '%s' "$line" | jq -r '.response // empty' 2>/dev/null)"
-    if [[ -n "$tok" ]]; then
-      full_response+="$tok"
-      (( ++dots % 30 == 0 )) && printf "·" >&2
-    fi
-  done < <(curl -s --max-time "$TIMEOUT" -X POST "$OLLAMA_URL" \
+  # Write payload to file — avoids shell encoding corruption with -d "$payload"
+  local tmp_payload tmp_ndjson tmp_result
+  tmp_payload="$(mktemp)"
+  tmp_ndjson="$(mktemp)"
+  tmp_result="$(mktemp)"
+  printf '%s' "$payload" > "$tmp_payload"
+
+  # Use OS-level timeout — curl --max-time is unreliable for streaming on Windows
+  timeout "${TIMEOUT}" curl -s -X POST "$OLLAMA_URL" \
     -H "Content-Type: application/json" \
-    -d "$payload")
+    --data-binary "@${tmp_payload}" \
+    > "$tmp_ndjson" 2>/dev/null || true
 
   kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null
-  (( dots > 0 )) && printf "\n" >&2
+  rm -f "$tmp_payload"
 
-  printf '%s' "$full_response"
+  # Parse NDJSON in Python — avoids jq UTF-8 corruption on Windows
+  "$PYTHON" - "$tmp_ndjson" "$tmp_result" << 'PYNDJSON'
+import sys, json
+src, dst = sys.argv[1], sys.argv[2]
+result = []
+dots = 0
+try:
+    with open(src, 'rb') as f:
+        for raw_line in f:
+            try:
+                line = raw_line.decode('utf-8', errors='replace').strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                t = obj.get('response', '')
+                if t:
+                    result.append(t)
+                    dots += 1
+                    if dots % 30 == 0:
+                        sys.stderr.write('·')
+                        sys.stderr.flush()
+            except Exception:
+                pass
+except Exception:
+    pass
+if dots > 0:
+    sys.stderr.write('\n')
+    sys.stderr.flush()
+with open(dst, 'w', encoding='utf-8') as f:
+    f.write(''.join(result))
+PYNDJSON
+
+  rm -f "$tmp_ndjson"
+
+  # Check for skip request (curl runs synchronously now, check after it finishes)
+  if [[ -f "$skip_flag" ]]; then
+    rm -f "$skip_flag" "$tmp_result"
+    touch "$skipped_flag"
+    printf "\n[skipped]\n" >&2
+    return
+  fi
+
+  printf '%s' "$tmp_result"
 }
 
 # --- JSON → markdown файлы (generic: works for any skill schema) ---
 json_to_files() {
-  local raw="$1"
+  local raw_file="$1"
+  [[ ! -s "$raw_file" ]] && return
 
-  # Пишем Python-скрипт извлечения JSON во временный файл (pipe + heredoc конфликтуют)
   local py_extract py_write
   py_extract="$(mktemp).py"
   py_write="$(mktemp).py"
@@ -314,7 +351,9 @@ def depth_find(text, start):
                 return text[start:i+1]
     return None
 
-text = sys.stdin.buffer.read().decode('utf-8', errors='replace')
+# Read from file — bypasses bash pipeline UTF-8 issues
+with open(sys.argv[1], 'r', encoding='utf-8', errors='replace') as fh:
+    text = fh.read()
 candidate = None
 
 # 1) ищем ```json ... ``` фенс — берём содержимое, ищем JSON через depth counting
@@ -342,10 +381,11 @@ except Exception as e:
     sys.exit(0)
 PYEXTRACT
 
-  local json
-  json="$(printf '%s' "$raw" | "$PYTHON" "$py_extract" 2>/dev/null)"
+  local json_file
+  json_file="$(mktemp)"
+  "$PYTHON" "$py_extract" "$raw_file" > "$json_file" 2>/dev/null
   rm -f "$py_extract"
-  [[ -z "$json" ]] && return
+  [[ ! -s "$json_file" ]] && { rm -f "$json_file"; return; }
 
   cat > "$py_write" << 'PYEOF'
 import sys, json, os
@@ -367,10 +407,15 @@ for key, items in data.items():
     if not isinstance(item, dict):
       continue
     item_id = str(item.get('id', '?'))
-    heading = next((str(item[k]) for k in HEADING_KEYS if item.get(k)), item_id)
+    heading_key = next((k for k in HEADING_KEYS if item.get(k)), None)
+    heading = str(item[heading_key]) if heading_key else item_id
     lines.append(f'## {item_id} {heading}')
     for k, v in item.items():
-      if k not in ('id',) + HEADING_KEYS and v:
+      if k == 'id' or k == heading_key:
+        continue
+      if v:
+        if isinstance(v, (list, dict)):
+          v = json.dumps(v, ensure_ascii=False)
         lines.append(f'- **{k.capitalize()}**: {v}')
     lines.append('')
   if not lines:
@@ -388,8 +433,8 @@ for key, items in data.items():
 PYEOF
 
   local result
-  result="$(printf '%s' "$json" | "$PYTHON" "$py_write" "$KNOWLEDGE_JIRA" 2>/dev/null)"
-  rm -f "$py_write"
+  result="$("$PYTHON" "$py_write" "$KNOWLEDGE_JIRA" < "$json_file" 2>/dev/null)"
+  rm -f "$py_write" "$json_file"
 
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
@@ -453,13 +498,13 @@ while IFS= read -r -d '' filepath; do
   tee_log "[START-MODEL] file=$filename doc_type=$doc_type chars=$chars model=$MODEL num_ctx=$NUM_CTX"
 
   t_start="$(date +%s)"
-  response="$(call_ollama_single "$content" "$ref" "$doc_type")"
+  result_file="$(call_ollama_single "$content" "$ref" "$doc_type")"
   t_end="$(date +%s)"
   elapsed=$(( t_end - t_start ))
 
   # Проверяем: был ли запрошен пропуск файла
   if [[ -f "$BRAIN_DIR/logs/.skipped-$JIRA" ]]; then
-    rm -f "$BRAIN_DIR/logs/.skipped-$JIRA"
+    rm -f "$BRAIN_DIR/logs/.skipped-$JIRA" "$result_file"
     warn "  Пропущен по запросу пользователя: $filename"
     tee_log "[SKIP-REQ] file=$filename elapsed=${elapsed}s"
     ((COUNT_SKIP++))
@@ -468,15 +513,17 @@ while IFS= read -r -d '' filepath; do
     continue
   fi
 
-  if [[ -z "$response" ]]; then
+  if [[ -z "$result_file" ]] || [[ ! -s "$result_file" ]]; then
     warn "  Таймаут или пустой ответ (${elapsed}с) — пропускаю: $filename"
     tee_log "[TIMEOUT] file=$filename elapsed=${elapsed}s"
+    [[ -n "$result_file" ]] && rm -f "$result_file"
     ((COUNT_ERR++))
   else
-    resp_len="${#response}"
+    resp_len="$(wc -c < "$result_file" | tr -d ' ')"
     info "  ✓ Ответ получен за ${elapsed}с (${resp_len} символов)"
     tee_log "[END-MODEL] file=$filename elapsed=${elapsed}s response_len=${resp_len}"
-    json_to_files "$response"
+    json_to_files "$result_file"
+    rm -f "$result_file"
     ((COUNT_OK++))
   fi
 
