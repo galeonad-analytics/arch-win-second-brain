@@ -21,8 +21,59 @@ KNOWLEDGE_DIR="$BRAIN_DIR/knowledge"
 CLAUDE_MD="$BRAIN_DIR/CLAUDE.md"
 MODEL="${OLLAMA_MODEL:-llama3.1:8b}"
 OLLAMA_URL="http://localhost:11434/api/generate"
-MAX_CHARS=8000    # лимит контента на файл
-TIMEOUT=120        # секунд на один запрос
+TIMEOUT=180        # секунд на один запрос
+
+# --- Авто-определение MAX_CHARS по модели и ОЗУ ---
+_get_ram_gb() {
+  local ram=8
+  case "$(uname -s)" in
+    Linux)  ram=$(awk '/MemTotal/{printf "%d", $2/1024/1024}' /proc/meminfo 2>/dev/null) ;;
+    Darwin) ram=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 8589934592) / 1073741824 )) ;;
+    *)      # Windows / MSYS
+      local b
+      b=$(powershell.exe -NoProfile -Command "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory" 2>/dev/null | tr -d '\r\n ')
+      [[ "$b" =~ ^[0-9]+$ ]] && ram=$(( b / 1073741824 ))
+      ;;
+  esac
+  echo "${ram:-8}"
+}
+
+_get_model_b() {
+  local m; m="$(echo "$MODEL" | tr '[:upper:]' '[:lower:]')"
+  if   [[ "$m" =~ 70b|72b ]]; then echo 70
+  elif [[ "$m" =~ 34b|30b ]]; then echo 34
+  elif [[ "$m" =~ 27b     ]]; then echo 27
+  elif [[ "$m" =~ 12b|13b ]]; then echo 13
+  elif [[ "$m" =~ 3b|4b   ]]; then echo 3
+  else echo 8; fi
+}
+
+_auto_max_chars() {
+  local ram b
+  ram=$(_get_ram_gb); b=$(_get_model_b)
+  if   (( b >= 70 )); then (( ram >= 64 )) && echo 24000 || echo 16000
+  elif (( b >= 27 )); then
+    if   (( ram >= 64 )); then echo 20000
+    elif (( ram >= 32 )); then echo 14000
+    elif (( ram >= 16 )); then echo 8000
+    else echo 4000; fi
+  elif (( b >= 12 )); then
+    if   (( ram >= 32 )); then echo 14000
+    elif (( ram >= 16 )); then echo 10000
+    elif (( ram >= 8  )); then echo 6000
+    else echo 4000; fi
+  else
+    if   (( ram >= 32 )); then echo 10000
+    elif (( ram >= 16 )); then echo 7000
+    elif (( ram >= 8  )); then echo 5000
+    else echo 3000; fi
+  fi
+}
+
+# Если передан из server.js — используем; иначе вычисляем
+MAX_CHARS="${MAX_CHARS:-$(_auto_max_chars)}"
+# num_ctx: chars + 2048 overhead, кратно 512
+NUM_CTX=$(( (MAX_CHARS + 2048 + 511) / 512 * 512 ))
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[process]${NC} $*"; }
@@ -43,7 +94,8 @@ curl -s --max-time 5 "$OLLAMA_URL" > /dev/null 2>&1 || { err "Ollama не зап
 [[ ! -f "$CLAUDE_MD" ]] && { err "CLAUDE.md не найден"; exit 1; }
 
 mkdir -p "$KNOWLEDGE_JIRA"
-SYSTEM_PROMPT="$(cat "$CLAUDE_MD")"
+# Для локальных моделей используем короткий системный промпт вместо полного CLAUDE.md
+SYSTEM_PROMPT="Ты извлекаешь знания из документов в структурированный JSON. Отвечай ТОЛЬКО валидным JSON без пояснений."
 COUNT_OK=0; COUNT_SKIP=0; COUNT_ERR=0
 
 log "Тикет: $JIRA | Модель: $MODEL | Лимит: ${MAX_CHARS} символов | Таймаут: ${TIMEOUT}с"
@@ -81,31 +133,24 @@ call_ollama_single() {
   [[ "$doc_type" == "spfa" ]] && spfa_instruction='
 8. "spfa": массив SPFA оценок вендора (если есть): [{id, vendor, status, findings, tco, source}]'
 
-  local prompt="Документ: $ref
-Тип: $doc_type
+  local prompt="Проанализируй текст документа и заполни JSON-структуру.
+Каждый элемент массива ДОЛЖЕН быть объектом с полями как в примере ниже.
+Если данных для категории нет — верни пустой массив [].
+Используй только роли людей, не имена.
 
-$content
-
----
-Проанализируй документ и извлеки знания в формате JSON.
-Верни ТОЛЬКО валидный JSON без markdown-обёртки, без пояснений.
-
-Структура ответа:
+ПРИМЕР (заполни по аналогии с реальными данными из документа):
 {
-  \"business_context\": [{\"id\": \"BC-001\", \"title\": \"\", \"problem\": \"\", \"goals\": \"\", \"scope_in\": \"\", \"scope_out\": \"\", \"source\": \"$ref\", \"tags\": \"#business-context\"}],
-  \"requirements\": [{\"id\": \"BR-001\", \"title\": \"\", \"type\": \"Functional|NFR|Security|Constraint|Assumption\", \"description\": \"\", \"priority\": \"Must|Should|Could\", \"source\": \"$ref\", \"tags\": \"#requirement\"}],
-  \"architecture\": [{\"id\": \"ARCH-001\", \"title\": \"\", \"type\": \"AS-IS|TO-BE|Integration|Scenario\", \"description\": \"\", \"systems\": \"\", \"protocol\": \"\", \"source\": \"$ref\", \"tags\": \"#architecture\"}],
-  \"adrs\": [{\"id\": \"ADR-001\", \"title\": \"\", \"status\": \"Proposed|Accepted\", \"context\": \"\", \"decision\": \"\", \"alternatives\": \"\", \"consequences\": \"\", \"source\": \"$ref\", \"tags\": \"#adr\"}],
-  \"risks\": [{\"id\": \"R-001\", \"title\": \"\", \"category\": \"Technical|Integration|Security|Vendor|Timeline\", \"impact\": \"High|Medium|Low\", \"probability\": \"High|Medium|Low\", \"mitigation\": \"\", \"source\": \"$ref\", \"tags\": \"#risk\"}],
-  \"open_questions\": [{\"id\": \"Q-001\", \"question\": \"\", \"context\": \"\", \"affects\": \"HLD|ADR|Requirements|Architecture\", \"owner\": \"\", \"urgency\": \"Blocker|High|Normal\", \"source\": \"$ref\", \"tags\": \"#open-question\"}],
-  \"stakeholders\": [{\"id\": \"S-001\", \"role\": \"\", \"project\": \"$JIRA\", \"interests\": \"\", \"raci\": \"Responsible|Accountable|Consulted|Informed\", \"source\": \"$ref\", \"tags\": \"#stakeholder\"}]${spfa_instruction}
+  \"business_context\": [{\"id\": \"BC-001\", \"title\": \"Название инициативы\", \"problem\": \"Какую проблему решает\", \"goals\": \"Цели\", \"source\": \"$ref\", \"tags\": \"#business-context\"}],
+  \"requirements\": [{\"id\": \"BR-001\", \"title\": \"Название требования\", \"type\": \"Functional\", \"description\": \"Описание\", \"priority\": \"Must\", \"source\": \"$ref\", \"tags\": \"#requirement\"}],
+  \"architecture\": [{\"id\": \"ARCH-001\", \"title\": \"Компонент или интеграция\", \"type\": \"Integration\", \"description\": \"Описание\", \"systems\": \"Система A, Система B\", \"protocol\": \"REST\", \"source\": \"$ref\", \"tags\": \"#architecture\"}],
+  \"adrs\": [{\"id\": \"ADR-001\", \"title\": \"Решение\", \"status\": \"Accepted\", \"context\": \"Контекст\", \"decision\": \"Решение\", \"consequences\": \"Последствия\", \"source\": \"$ref\", \"tags\": \"#adr\"}],
+  \"risks\": [{\"id\": \"R-001\", \"title\": \"Название риска\", \"category\": \"Technical\", \"impact\": \"High\", \"probability\": \"Medium\", \"mitigation\": \"Меры\", \"source\": \"$ref\", \"tags\": \"#risk\"}],
+  \"open_questions\": [{\"id\": \"Q-001\", \"question\": \"Вопрос?\", \"context\": \"Контекст\", \"affects\": \"Architecture\", \"owner\": \"Роль\", \"urgency\": \"Normal\", \"source\": \"$ref\", \"tags\": \"#open-question\"}],
+  \"stakeholders\": [{\"id\": \"S-001\", \"role\": \"Product Owner\", \"project\": \"$JIRA\", \"interests\": \"Интересы\", \"raci\": \"Accountable\", \"source\": \"$ref\", \"tags\": \"#stakeholder\"}]
 }
 
-Правила:
-- Если данных для категории нет — верни пустой массив []
-- НЕ используй реальные имена людей — только роли
-- Каждое поле source = \"$ref\"
-- Только факты из документа; домыслы помечай тегом #hypothesis"
+ДОКУМЕНТ ($ref, тип: $doc_type):
+$content"
 
   curl -s --max-time "$TIMEOUT" -X POST "$OLLAMA_URL" \
     -H "Content-Type: application/json" \
@@ -113,7 +158,8 @@ $content
       --arg model "$MODEL" \
       --arg system "$SYSTEM_PROMPT" \
       --arg prompt "$prompt" \
-      '{model: $model, system: $system, prompt: $prompt, stream: false, options: {temperature: 0.1, num_ctx: 8192}}'
+      --argjson num_ctx "$NUM_CTX" \
+      '{model: $model, system: $system, prompt: $prompt, stream: false, format: "json", options: {temperature: 0.1, num_ctx: $num_ctx}}'
     )" | jq -r '.response // empty'
 }
 

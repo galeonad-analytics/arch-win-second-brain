@@ -679,12 +679,21 @@
         <div class="field">
           <label>Ollama модель (локальная)</label>
           <div style="display:flex;gap:8px">
-            <select id="ollama-model" style="flex:1">
+            <select id="ollama-model" style="flex:1" onchange="updateMaxCharsHint()">
               <option value="llama3.1:8b">llama3.1:8b (текущая)</option>
             </select>
             <button class="btn btn-ghost btn-sm" onclick="refreshOllamaModels()" title="Обновить список">↺</button>
           </div>
           <div id="ollama-model-info" style="font-size:10px;color:var(--text3);margin-top:4px"></div>
+        </div>
+
+        <div class="field">
+          <label>MAX_CHARS — лимит символов на документ</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" id="max-chars" placeholder="авто" min="1000" max="64000" step="1000" style="width:120px" />
+            <span id="max-chars-hint" style="font-size:11px;color:var(--text3)"></span>
+          </div>
+          <div style="font-size:10px;color:var(--text3);margin-top:4px">Оставь пустым — значение вычислится по модели и ОЗУ. Больше = качественнее, но медленнее.</div>
         </div>
 
         <div class="field">
@@ -1367,6 +1376,12 @@ function colorize(text) { return text; }
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 // === SETTINGS ===
+function updateMaxCharsHint() {
+  // После смены модели — обновить подсказку через API
+  if (document.getElementById('max-chars').value.trim()) return; // ручной режим
+  loadSettings();
+}
+
 async function refreshOllamaModels() {
   const sel = document.getElementById('ollama-model');
   const info = document.getElementById('ollama-model-info');
@@ -1442,6 +1457,18 @@ async function loadSettings() {
       }
     }
   }
+  // MAX_CHARS
+  const mcInput = document.getElementById('max-chars');
+  const mcHint = document.getElementById('max-chars-hint');
+  if (mcInput && data.maxCharsAuto !== undefined) {
+    if (data.maxCharsIsManual) {
+      mcInput.value = data.maxChars;
+      if (mcHint) mcHint.textContent = `авто было бы: ${data.maxCharsAuto.toLocaleString()}`;
+    } else {
+      mcInput.value = '';
+      if (mcHint) mcHint.textContent = `авто: ${data.maxCharsAuto.toLocaleString()} (ОЗУ ${data.ramGB}ГБ, ${data.ollamaModel})`;
+    }
+  }
 }
 
 async function saveSettings() {
@@ -1450,10 +1477,12 @@ async function saveSettings() {
   const modelCustom = document.getElementById('model-custom');
   const model = modelSelect.value === 'custom' ? modelCustom.value.trim() : modelSelect.value;
   const ollamaModel = document.getElementById('ollama-model').value;
+  const maxCharsRaw = document.getElementById('max-chars').value.trim();
   const body = {};
   if (key) body.ANTHROPIC_API_KEY = key;
   if (model) body.CLAUDE_MODEL = model;
   if (ollamaModel) body.OLLAMA_MODEL = ollamaModel;
+  body.MAX_CHARS = maxCharsRaw; // пустая строка = сброс на авто
   const r = await fetch(API + '/settings', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},

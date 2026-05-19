@@ -19,9 +19,40 @@ import { exec } from 'child_process';
 import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { totalmem } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = 3030;
+
+function computeAutoMaxChars(model) {
+  const ramGB = Math.floor(totalmem() / (1024 ** 3));
+  const m = (model || '').toLowerCase();
+  let b = 8;
+  if (/70b|72b/.test(m))      b = 70;
+  else if (/34b|30b/.test(m)) b = 34;
+  else if (/27b/.test(m))     b = 27;
+  else if (/12b|13b/.test(m)) b = 13;
+  else if (/3b|4b/.test(m))   b = 3;
+
+  if (b >= 70) return ramGB >= 64 ? 24000 : 16000;
+  if (b >= 27) {
+    if (ramGB >= 64) return 20000;
+    if (ramGB >= 32) return 14000;
+    if (ramGB >= 16) return 8000;
+    return 4000;
+  }
+  if (b >= 12) {
+    if (ramGB >= 32) return 14000;
+    if (ramGB >= 16) return 10000;
+    if (ramGB >= 8)  return 6000;
+    return 4000;
+  }
+  // 7-8B and below
+  if (ramGB >= 32) return 10000;
+  if (ramGB >= 16) return 7000;
+  if (ramGB >= 8)  return 5000;
+  return 3000;
+}
 
 // На Windows добавляем Git bash и папку scripts/ в PATH чтобы exec() мог найти bash/jq
 if (process.platform === 'win32') {
@@ -29,8 +60,18 @@ if (process.platform === 'win32') {
     'C:\\Program Files\\Git\\usr\\bin',
     'C:\\Program Files (x86)\\Git\\usr\\bin',
     join(__dirname, 'scripts'),
+    // pandoc installs to user AppData on Windows
+    join(process.env.LOCALAPPDATA || '', 'Pandoc'),
+    // tesseract default install path
+    'C:\\Program Files\\Tesseract-OCR',
+    // imagemagick default install path (version-specific)
+    ...(() => {
+      try {
+        return readdirSync('C:\\Program Files').filter(d => d.startsWith('ImageMagick')).map(d => `C:\\Program Files\\${d}`);
+      } catch { return []; }
+    })(),
   ];
-  const found = extraPaths.filter(p => existsSync(p));
+  const found = extraPaths.filter(p => p && existsSync(p));
   if (found.length) process.env.PATH = found.join(';') + ';' + process.env.PATH;
 }
 
@@ -161,8 +202,10 @@ const server = createServer(async (req, res) => {
       const { jira } = await getBody(req);
       if (!jira) return json(res, { error: 'jira обязателен' }, 400);
       cors(res); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Transfer-Encoding': 'chunked' });
+      const _ollamaModel = ENV.OLLAMA_MODEL || 'llama3.1:8b';
+      const _maxChars = String(ENV.MAX_CHARS || computeAutoMaxChars(_ollamaModel));
       const child = exec(`bash "${join(__dirname, 'scripts', 'process.sh')}" "${jira}"`,
-        { env: { ...process.env, OLLAMA_MODEL: ENV.OLLAMA_MODEL || 'llama3.1:8b' } });
+        { env: { ...process.env, OLLAMA_MODEL: _ollamaModel, MAX_CHARS: _maxChars } });
       child.stdout.on('data', d => res.write(d));
       child.stderr.on('data', d => res.write(d));
       child.on('close', code => res.end(`\n[exit ${code}]`));
@@ -368,20 +411,34 @@ ${context.slice(0, 14000)}
 
     // GET /api/settings
     if (req.method === 'GET' && url.pathname === '/api/settings') {
+      const ollamaModel = ENV.OLLAMA_MODEL || 'llama3.1:8b';
+      const autoMaxChars = computeAutoMaxChars(ollamaModel);
+      const manualMaxChars = ENV.MAX_CHARS ? parseInt(ENV.MAX_CHARS) : null;
       return json(res, {
         hasAnthropicKey: !!(ENV.ANTHROPIC_API_KEY),
         keyPreview: ENV.ANTHROPIC_API_KEY ? '...'+ENV.ANTHROPIC_API_KEY.slice(-6) : null,
         claudeModel: ENV.CLAUDE_MODEL || 'claude-sonnet-4-6',
-        ollamaModel: ENV.OLLAMA_MODEL || 'llama3.1:8b'
+        ollamaModel,
+        maxChars: manualMaxChars || autoMaxChars,
+        maxCharsAuto: autoMaxChars,
+        maxCharsIsManual: !!manualMaxChars,
+        ramGB: Math.floor(totalmem() / (1024 ** 3))
       });
     }
 
-    // POST /api/settings  { ANTHROPIC_API_KEY }
+    // POST /api/settings  { ANTHROPIC_API_KEY, OLLAMA_MODEL, CLAUDE_MODEL, MAX_CHARS }
     if (req.method === 'POST' && url.pathname === '/api/settings') {
       const body = await getBody(req);
       const envPath = join(__dirname, '.env');
       let lines = existsSync(envPath) ? readFileSync(envPath, 'utf8').split('\n').filter(Boolean) : [];
+      const allowed = ['ANTHROPIC_API_KEY', 'CLAUDE_MODEL', 'OLLAMA_MODEL', 'MAX_CHARS'];
       Object.entries(body).forEach(([k, v]) => {
+        if (!allowed.includes(k)) return;
+        if (k === 'MAX_CHARS' && v === '') {
+          // пустое значение = сброс на авто
+          lines = lines.filter(l => !l.startsWith('MAX_CHARS='));
+          return;
+        }
         if (!v) return;
         const idx = lines.findIndex(l => l.startsWith(k + '='));
         if (idx >= 0) lines[idx] = k + '=' + v;
