@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
+export PYTHONIOENCODING=utf-8
 
 # =============================================================================
 # process.sh v2 — оптимизированный: 1 запрос вместо 7, таймаут, фильтр мусора
@@ -313,7 +314,7 @@ def depth_find(text, start):
                 return text[start:i+1]
     return None
 
-text = sys.stdin.read()
+text = sys.stdin.buffer.read().decode('utf-8', errors='replace')
 candidate = None
 
 # 1) ищем ```json ... ``` фенс — берём содержимое, ищем JSON через depth counting
@@ -350,7 +351,7 @@ PYEXTRACT
 import sys, json, os
 knowledge_dir = sys.argv[1]
 try:
-  data = json.loads(sys.stdin.read())
+  data = json.loads(sys.stdin.buffer.read().decode('utf-8', errors='replace'))
 except Exception as e:
   print(f'json parse error: {e}', file=sys.stderr)
   sys.exit(0)
