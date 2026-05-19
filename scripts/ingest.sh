@@ -12,6 +12,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRAIN_DIR="$(dirname "$SCRIPT_DIR")"
 RAW_DIR="$BRAIN_DIR/raw"
 TODAY="$(date +%Y-%m-%d)"
+PANDOC_TIMEOUT="${PANDOC_TIMEOUT:-120}"   # макс секунд на конвертацию одного файла
+SOFFICE_TIMEOUT="${SOFFICE_TIMEOUT:-180}" # макс секунд на LibreOffice
+MAGICK_TIMEOUT="${MAGICK_TIMEOUT:-60}"    # макс секунд на imagemagick
+EBOOK_TIMEOUT="${EBOOK_TIMEOUT:-120}"     # макс секунд на ebook-convert
+
+# Tesseract на Windows часто не в PATH — добавляем стандартный путь
+[[ -d "/c/Program Files/Tesseract-OCR" ]] && export PATH="$PATH:/c/Program Files/Tesseract-OCR"
 
 # --- цвета для вывода ---
 GREEN='\033[0;32m'
@@ -51,9 +58,14 @@ check_dep() {
     exit 1
   fi
 }
+check_dep_optional() {
+  if ! command -v "$1" &>/dev/null; then
+    warn "Опционально не найден: $1 (OCR/сканы недоступны). winget install $2"
+  fi
+}
 check_dep pandoc pandoc
-check_dep tesseract tesseract
-check_dep magick imagemagick
+check_dep_optional tesseract tesseract
+check_dep_optional magick imagemagick
 
 # --- создаём папку назначения ---
 TARGET_DIR="$RAW_DIR/$JIRA"
@@ -105,10 +117,10 @@ pdf_ocr() {
   local tmp_dir ocr_text=""
   tmp_dir="$(mktemp -d)"
   log "PDF OCR → md: $filename"
-  if magick -density 200 "${filepath}[0-9]" -colorspace Gray -contrast-stretch 0x10% "${tmp_dir}/page.png" 2>/dev/null; then
+  if timeout "$MAGICK_TIMEOUT" magick -density 200 "${filepath}[0-9]" -colorspace Gray -contrast-stretch 0x10% "${tmp_dir}/page.png" 2>/dev/null; then
     for page_img in "${tmp_dir}"/page*.png "${tmp_dir}"/page-*.png; do
       [[ -f "$page_img" ]] || continue
-      ocr_text="${ocr_text}$(tesseract "$page_img" stdout -l rus+eng 2>/dev/null || true)"$'\n'
+      ocr_text="${ocr_text}$(timeout 30 tesseract "$page_img" stdout -l rus+eng 2>/dev/null || true)"$'\n'
     done
   fi
   rm -rf "$tmp_dir"
@@ -135,7 +147,7 @@ while IFS= read -r -d '' filepath; do
 
   # пропускаем скрытые файлы и системный мусор
   case "$filename" in
-    .* | ~$* | *.tmp | Thumbs.db | .DS_Store) continue ;;
+    .* | '~$'* | *.tmp | [Tt]humbs.db | .DS_Store) continue ;;
   esac
 
   tee_log "[FILE-START] $filename ext=$ext_lower"
@@ -146,9 +158,9 @@ while IFS= read -r -d '' filepath; do
       log "PDF → md: $filename"
       tee_log "[FILE] $filename ext=pdf"
       t0="$(date +%s)"
-      if pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
-        # Проверяем что pandoc реально извлёк текст (не пустой файл)
-        text_len="$(awk '/^---/{found++; if(found==2){skip=0; next}} found<2{next} {print}' "$out_path" | tr -d '[:space:]' | wc -c | tr -d ' ')"
+      if timeout "$PANDOC_TIMEOUT" pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
+        # wc -c на сыром pandoc-выводе (до add_frontmatter — фронтматтера ещё нет)
+        text_len="$(tr -d '[:space:]' < "$out_path" | wc -c | tr -d ' ')"
         if [[ "$text_len" -gt 50 ]]; then
           add_frontmatter "$out_path" "$filepath" "pdf"
           tee_log "[DONE] $filename method=pandoc chars=$text_len elapsed=$(( $(date +%s) - t0 ))s"
@@ -156,26 +168,34 @@ while IFS= read -r -d '' filepath; do
         else
           warn "pandoc извлёк пустой текст из: $filename — пробую pdftotext..."
           if command -v pdftotext &>/dev/null; then
-            pdftotext "$filepath" - 2>/dev/null > "$out_path"
-            text_len="$(wc -c < "$out_path" | tr -d ' ')"
-            if [[ "$text_len" -lt 50 ]]; then false; fi
-            add_frontmatter "$out_path" "$filepath" "pdf"
-            COUNT_OK=$((COUNT_OK+1))
+            timeout "$PANDOC_TIMEOUT" pdftotext "$filepath" - 2>/dev/null > "$out_path" || true
+            text_len="$(tr -d '[:space:]' < "$out_path" | wc -c | tr -d ' ')"
+            if [[ "$text_len" -gt 50 ]]; then
+              add_frontmatter "$out_path" "$filepath" "pdf"
+              COUNT_OK=$((COUNT_OK+1))
+            else
+              warn "pdftotext тоже пустой — пробую OCR: $filename"
+              pdf_ocr "$filepath" "$out_path" "$filename"
+            fi
           else
-            warn "pdftotext не смог — пробую OCR: $filename"
+            warn "pdftotext не найден — пробую OCR: $filename"
             pdf_ocr "$filepath" "$out_path" "$filename"
           fi
         fi
       else
         warn "pandoc не смог обработать: $filename — пробую pdftotext..."
         if command -v pdftotext &>/dev/null; then
-          pdftotext "$filepath" - 2>/dev/null > "$out_path"
-          text_len="$(wc -c < "$out_path" | tr -d ' ')"
-          if [[ "$text_len" -lt 50 ]]; then false; fi
-          add_frontmatter "$out_path" "$filepath" "pdf"
-          COUNT_OK=$((COUNT_OK+1))
+          timeout "$PANDOC_TIMEOUT" pdftotext "$filepath" - 2>/dev/null > "$out_path" || true
+          text_len="$(tr -d '[:space:]' < "$out_path" | wc -c | tr -d ' ')"
+          if [[ "$text_len" -gt 50 ]]; then
+            add_frontmatter "$out_path" "$filepath" "pdf"
+            COUNT_OK=$((COUNT_OK+1))
+          else
+            warn "pdftotext тоже пустой — пробую OCR: $filename"
+            pdf_ocr "$filepath" "$out_path" "$filename"
+          fi
         else
-          warn "pdftotext не смог — пробую OCR: $filename"
+          warn "pdftotext не найден — пробую OCR: $filename"
           pdf_ocr "$filepath" "$out_path" "$filename"
         fi
       fi
@@ -183,13 +203,13 @@ while IFS= read -r -d '' filepath; do
 
     docx|doc)
       log "DOCX → md: $filename"
-      if pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
+      if timeout "$PANDOC_TIMEOUT" pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
         add_frontmatter "$out_path" "$filepath" "docx"
         COUNT_OK=$((COUNT_OK+1))
       elif command -v soffice &>/dev/null; then
         log "pandoc не смог → LibreOffice: $filename"
         tmp_dir="$(mktemp -d)"
-        if soffice --headless --convert-to docx "$filepath" --outdir "$tmp_dir" 2>/dev/null; then
+        if timeout "$SOFFICE_TIMEOUT" soffice --headless --convert-to docx "$filepath" --outdir "$tmp_dir" 2>/dev/null; then
           converted="$(find "$tmp_dir" -name "*.docx" | head -1)"
           if [[ -n "$converted" ]] && pandoc "$converted" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
             add_frontmatter "$out_path" "$filepath" "docx"
@@ -211,7 +231,7 @@ while IFS= read -r -d '' filepath; do
 
     pptx|ppt)
       log "PPTX → md: $filename"
-      if pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
+      if timeout "$PANDOC_TIMEOUT" pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
         add_frontmatter "$out_path" "$filepath" "pptx"
         COUNT_OK=$((COUNT_OK+1))
       else
@@ -238,8 +258,8 @@ while IFS= read -r -d '' filepath; do
       log "IMG → OCR → md: $filename"
       # препроцессинг: grayscale + contrast для лучшего OCR
       local_tmp="$(mktemp).png"
-      if magick "$filepath" -colorspace Gray -contrast-stretch 0x10% "$local_tmp" 2>/dev/null; then
-        ocr_text="$(tesseract "$local_tmp" stdout -l rus+eng 2>/dev/null || true)"
+      if timeout "$MAGICK_TIMEOUT" magick "$filepath" -colorspace Gray -contrast-stretch 0x10% "$local_tmp" 2>/dev/null; then
+        ocr_text="$(timeout 30 tesseract "$local_tmp" stdout -l rus+eng 2>/dev/null || true)"
         rm -f "$local_tmp"
         echo "$ocr_text" > "$out_path"
         add_frontmatter "$out_path" "$filepath" "image"
@@ -257,7 +277,7 @@ while IFS= read -r -d '' filepath; do
 
     xlsx|xls|csv)
       log "ТАБЛИЦА → md: $filename"
-      if pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
+      if timeout "$PANDOC_TIMEOUT" pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
         add_frontmatter "$out_path" "$filepath" "spreadsheet"
         COUNT_OK=$((COUNT_OK+1))
       else
@@ -300,7 +320,7 @@ while IFS= read -r -d '' filepath; do
 
     epub)
       log "EPUB → md: $filename"
-      if pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
+      if timeout "$PANDOC_TIMEOUT" pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
         add_frontmatter "$out_path" "$filepath" "txt"
         COUNT_OK=$((COUNT_OK+1))
       else
@@ -311,7 +331,7 @@ while IFS= read -r -d '' filepath; do
 
     fb2)
       log "FB2 → md: $filename"
-      if pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
+      if timeout "$PANDOC_TIMEOUT" pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
         add_frontmatter "$out_path" "$filepath" "txt"
         COUNT_OK=$((COUNT_OK+1))
       else
@@ -324,8 +344,8 @@ while IFS= read -r -d '' filepath; do
       log "MOBI → md: $filename"
       if command -v ebook-convert &>/dev/null; then
         local tmp_epub; tmp_epub="$(mktemp).epub"
-        if ebook-convert "$filepath" "$tmp_epub" 2>/dev/null \
-            && pandoc "$tmp_epub" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
+        if timeout "$EBOOK_TIMEOUT" ebook-convert "$filepath" "$tmp_epub" 2>/dev/null \
+            && timeout "$PANDOC_TIMEOUT" pandoc "$tmp_epub" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
           rm -f "$tmp_epub"
           add_frontmatter "$out_path" "$filepath" "txt"
           COUNT_OK=$((COUNT_OK+1))
