@@ -98,6 +98,15 @@ info() { local m="${BLUE}[process]${NC} $*";  echo -e "$m"; tee_log "[INFO] $*";
 warn() { local m="${YELLOW}[warn]${NC}    $*"; echo -e "$m"; tee_log "[WARN] $*"; }
 err()  { local m="${RED}[error]${NC}   $*";  echo -e "$m" >&2; tee_log "[ERR]  $*"; }
 
+# Определяем python: на Windows python3 — стаб Microsoft Store, нужен python
+PYTHON="$(command -v python3 2>/dev/null)"
+if [[ -n "$PYTHON" ]]; then
+  # Проверяем что это реальный Python, а не стаб (стаб возвращает exit 1+ без версии)
+  "$PYTHON" --version &>/dev/null || PYTHON=""
+fi
+[[ -z "$PYTHON" ]] && PYTHON="$(command -v python 2>/dev/null)"
+[[ -z "$PYTHON" ]] && { err "Python не найден"; exit 1; }
+
 if [[ -z "$JIRA" ]]; then
   err "Использование: $0 <JIRA-ID>"
   exit 1
@@ -205,7 +214,7 @@ json_to_files() {
   write_section() {
     local key="$1" file="$2" header="$3"
     local items
-    items="$(echo "$json" | python3 -c "
+    items="$(echo "$json" | "$PYTHON" -c "
 import sys,json
 try:
   d=json.load(sys.stdin)
