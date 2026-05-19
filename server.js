@@ -23,6 +23,17 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = 3030;
 
+// На Windows добавляем Git bash и папку scripts/ в PATH чтобы exec() мог найти bash/jq
+if (process.platform === 'win32') {
+  const extraPaths = [
+    'C:\\Program Files\\Git\\usr\\bin',
+    'C:\\Program Files (x86)\\Git\\usr\\bin',
+    join(__dirname, 'scripts'),
+  ];
+  const found = extraPaths.filter(p => existsSync(p));
+  if (found.length) process.env.PATH = found.join(';') + ';' + process.env.PATH;
+}
+
 const MIME = { '.html':'text/html', '.js':'application/javascript', '.css':'text/css', '.json':'application/json' };
 
 function cors(res) {

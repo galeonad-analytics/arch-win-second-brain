@@ -1,6 +1,7 @@
 .obsidian/
 .DS_Store
 .env
+scripts/*.exe
 .env
 .DS_Store
 raw/*

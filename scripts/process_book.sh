@@ -26,7 +26,7 @@ OLLAMA_URL="http://localhost:11434/api/generate"
 MAX_CHARS=8000       # символов на чанк — как в process.sh
 MAX_CHUNKS=12        # максимум чанков из книги (~96k символов, ~70 страниц)
 TIMEOUT=120          # секунд на запрос — как в process.sh
-TMP_DIR="/tmp/process_book_$$"
+TMP_DIR="$(mktemp -d)"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[book]${NC}   $*"; }

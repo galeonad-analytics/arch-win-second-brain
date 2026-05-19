@@ -38,7 +38,7 @@ fi
 # --- проверка зависимостей ---
 check_dep() {
   if ! command -v "$1" &>/dev/null; then
-    err "Не найден: $1. Установи: brew install $2"
+    err "Не найден: $1. macOS: brew install $2 | Windows: winget install $2"
     exit 1
   fi
 }

@@ -62,7 +62,9 @@ is_noise() {
 }
 
 mark_processed() {
-  sed -i '' 's/^processed: false/processed: true/' "$1"
+  local tmp
+  tmp="$(mktemp)"
+  sed 's/^processed: false/processed: true/' "$1" > "$tmp" && mv "$tmp" "$1"
 }
 
 get_frontmatter() {
