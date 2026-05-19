@@ -120,8 +120,14 @@ curl -s --max-time 5 "$OLLAMA_URL" > /dev/null 2>&1 || { err "Ollama не зап
 [[ ! -f "$CLAUDE_MD" ]] && { err "CLAUDE.md не найден"; exit 1; }
 
 mkdir -p "$KNOWLEDGE_JIRA"
-# Для локальных моделей используем короткий системный промпт вместо полного CLAUDE.md
-SYSTEM_PROMPT="Ты извлекаешь знания из документов в структурированный JSON. Отвечай ТОЛЬКО валидным JSON без пояснений."
+# Если у проекта есть свой скилл — используем его; иначе дефолтный SA-промпт
+SKILL_FILE="$KNOWLEDGE_JIRA/SKILL.md"
+if [[ -f "$SKILL_FILE" ]]; then
+  SYSTEM_PROMPT="$(cat "$SKILL_FILE")"
+  info "Используется скилл проекта: SKILL.md"
+else
+  SYSTEM_PROMPT="Ты извлекаешь знания из документов в структурированный JSON. Отвечай ТОЛЬКО валидным JSON без пояснений."
+fi
 COUNT_OK=0; COUNT_SKIP=0; COUNT_ERR=0
 
 log "Тикет: $JIRA | Модель: $MODEL | Лимит: ${MAX_CHARS} символов | Таймаут: ${TIMEOUT}с"
@@ -212,51 +218,68 @@ $content"
   printf '%s' "$full_response"
 }
 
-# --- JSON → markdown файлы ---
+# --- JSON → markdown файлы (generic: works for any skill schema) ---
 json_to_files() {
   local json="$1"
-
-  # вырезаем JSON если модель добавила текст вокруг
-  json="$(echo "$json" | sed -n '/^{/,/^}/p' | head -200)"
+  json="$(echo "$json" | sed -n '/^{/,/^}/p' | head -400)"
   [[ -z "$json" ]] && return
 
-  # функция записи секции
-  write_section() {
-    local key="$1" file="$2" header="$3"
-    local items
-    items="$(echo "$json" | "$PYTHON" -c "
-import sys,json
+  local py_script
+  py_script="$(mktemp --suffix=.py)"
+  cat > "$py_script" << 'PYEOF'
+import sys, json, os
+knowledge_dir = sys.argv[1]
 try:
-  d=json.load(sys.stdin)
-  items=d.get('$key',[])
-  if not items: sys.exit(0)
-  for i in items:
-    print('## ' + i.get('id','?') + ' ' + (i.get('title') or i.get('role') or i.get('question','?')))
-    for k,v in i.items():
-      if k not in ('id','title','role','question') and v:
-        print('- **' + k.capitalize() + '**: ' + str(v))
-    print()
-except: pass
-" 2>/dev/null)"
-    [[ -z "$items" ]] && return
-    local target="$KNOWLEDGE_JIRA/$file"
-    if [[ ! -f "$target" ]]; then
-      printf "# %s — %s\n\n%s\n" "$header" "$JIRA" "$items" > "$target"
-      log "Создан: $file"
-    else
-      printf "\n---\n\n%s\n" "$items" >> "$target"
-      log "Обновлён: $file"
-    fi
-  }
+  data = json.loads(sys.stdin.read())
+except Exception as e:
+  print(f'json parse error: {e}', file=sys.stderr)
+  sys.exit(0)
+project = os.path.basename(knowledge_dir)
+HEADING_KEYS = ('title','name','role','question','concept','finding','decision','insight','method','action')
+for key, items in data.items():
+  if not isinstance(items, list) or not items:
+    continue
+  filename = key.replace('_', '-') + '.md'
+  filepath = os.path.join(knowledge_dir, filename)
+  lines = []
+  for item in items:
+    if not isinstance(item, dict):
+      continue
+    item_id = str(item.get('id', '?'))
+    heading = next((str(item[k]) for k in HEADING_KEYS if item.get(k)), item_id)
+    lines.append(f'## {item_id} {heading}')
+    for k, v in item.items():
+      if k not in ('id',) + HEADING_KEYS and v:
+        lines.append(f'- **{k.capitalize()}**: {v}')
+    lines.append('')
+  if not lines:
+    continue
+  content = '\n'.join(lines)
+  header_title = key.replace('_', ' ').title()
+  if os.path.exists(filepath):
+    with open(filepath, 'a', encoding='utf-8') as f:
+      f.write('\n---\n\n' + content)
+    print(f'append:{filename}')
+  else:
+    with open(filepath, 'w', encoding='utf-8') as f:
+      f.write(f'# {header_title} — {project}\n\n{content}')
+    print(f'create:{filename}')
+PYEOF
 
-  write_section "business_context"  "business-context.md"  "Бизнес-контекст"
-  write_section "requirements"      "requirements.md"       "Требования"
-  write_section "architecture"      "architecture.md"       "Архитектура решения"
-  write_section "adrs"              "adrs.md"               "Architecture Decision Records"
-  write_section "risks"             "risks.md"              "Риски"
-  write_section "open_questions"    "open-questions.md"     "Открытые вопросы"
-  write_section "stakeholders"      "stakeholders.md"       "Стейкхолдеры"
-  write_section "spfa"              "spfa-assessment.md"    "SPFA Оценка вендора"
+  local result
+  result="$(echo "$json" | "$PYTHON" "$py_script" "$KNOWLEDGE_JIRA" 2>/dev/null)"
+  rm -f "$py_script"
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == create:* ]]; then
+      log "  Создан: ${line#create:}"
+    elif [[ "$line" == append:* ]]; then
+      log "  Обновлён: ${line#append:}"
+    else
+      warn "$line"
+    fi
+  done <<< "$result"
 }
 
 detect_doc_type() {

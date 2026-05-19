@@ -444,9 +444,7 @@
     <button class="nav-btn" onclick="showView('artifact')" id="nav-artifact">
       <span class="icon">◈</span> Генерация артефакта
     </button>
-    <button class="nav-btn" onclick="showView('skills')" id="nav-skills">
-      <span class="icon">◆</span> Скиллы
-    </button>
+
     <button class="nav-btn" onclick="showView('settings')" id="nav-settings">
       <span class="icon">⚙</span> Настройки
     </button>
@@ -473,8 +471,10 @@
 
     <!-- INGEST VIEW -->
     <div id="view-ingest">
+
+      <!-- Step 1: Load documents -->
       <div class="card">
-        <div class="card-title">⊕ Новый проект</div>
+        <div class="card-title">① Загрузить документы</div>
         <div class="field">
           <label>Project Label</label>
           <input type="text" id="ingest-jira" placeholder="ARCH-123" />
@@ -487,24 +487,64 @@
           <button class="btn btn-primary" onclick="runIngest()" id="btn-ingest">
             <span>⊕</span> Загрузить и конвертировать
           </button>
-          <button class="btn btn-ghost" onclick="runProcess()" id="btn-process" style="display:none">
-            <span>▶</span> Обработать через Ollama
-          </button>
           <button class="btn btn-danger" onclick="stopOperation()" id="btn-stop" style="display:none">
             <span>■</span> Стоп
           </button>
-          <button class="btn" onclick="skipCurrentFile()" id="btn-skip" style="display:none;background:rgba(245,166,35,0.1);color:var(--amber);border:1px solid rgba(245,166,35,0.3)">
+        </div>
+        <div class="terminal" id="terminal-ingest"></div>
+      </div>
+
+      <!-- Step 2: Project skill -->
+      <div class="card" id="card-skill" style="display:none">
+        <div class="card-title" style="justify-content:space-between">
+          <span>② Скилл проекта</span>
+          <span id="skill-status-badge" style="font-size:10px;font-weight:400;color:var(--text3)"></span>
+        </div>
+        <div style="font-size:11px;color:var(--text2);margin-bottom:14px;line-height:1.6">
+          Модель анализирует загруженные документы и предлагает инструкцию (SKILL.md), управляющую извлечением знаний. Без скилла используется дефолтный.
+        </div>
+        <div class="btn-row" style="margin-bottom:12px">
+          <button class="btn btn-ghost" onclick="analyzeForSkill()" id="btn-analyze-skill">
+            <span>⇒</span> Проанализировать и предложить скилл
+          </button>
+          <button class="btn btn-ghost btn-sm" onclick="skipSkillStep()" style="color:var(--text3)">
+            Пропустить шаг
+          </button>
+        </div>
+        <div class="field">
+          <label>SKILL.md — инструкция для модели (редактируется вручную)</label>
+          <textarea id="skill-textarea" placeholder="Нажми «Проанализировать» для автоматического предложения или введи инструкцию вручную..." style="min-height:260px;resize:vertical;font-size:11px;line-height:1.6"></textarea>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="saveSkill()" id="btn-save-skill">
+            <span>✓</span> Сохранить SKILL.md
+          </button>
+        </div>
+        <div class="terminal" id="terminal-skill" style="display:none"></div>
+      </div>
+
+      <!-- Step 3: Process via model -->
+      <div class="card" id="card-process" style="display:none">
+        <div class="card-title">③ Обработать через модель</div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="runProcess()" id="btn-process">
+            <span>▶</span> Запустить обработку
+          </button>
+          <button class="btn btn-danger" onclick="stopOperation()" id="btn-stop-process" style="display:none">
+            <span>■</span> Стоп
+          </button>
+          <button class="btn" onclick="skipCurrentFile()" id="btn-skip-process" style="display:none;background:rgba(245,166,35,0.1);color:var(--amber);border:1px solid rgba(245,166,35,0.3)">
             <span>⇥</span> Пропустить файл
           </button>
         </div>
-        <div class="terminal" id="terminal-ingest"></div>
-        <div class="progress-block" id="progress-block">
+        <div class="progress-block" id="progress-block" style="margin-top:12px;display:none">
           <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progress-fill"></div></div>
           <div class="progress-label">
             <span id="progress-text">Обработка...</span>
             <span class="eta" id="progress-eta"></span>
           </div>
         </div>
+        <div class="terminal" id="terminal-process" style="display:none"></div>
       </div>
 
       <div id="projects-overview"></div>
@@ -612,68 +652,6 @@
         </div>
 
         <div class="artifact-output" id="artifact-output"></div>
-      </div>
-    </div>
-
-    <!-- SKILLS VIEW -->
-    <div id="view-skills" style="display:none">
-      <div class="card">
-        <div class="card-title" style="justify-content:space-between">
-          <span>◆ База скиллов</span>
-          <span id="skills-count" style="font-size:10px;color:var(--text3);font-weight:400"></span>
-        </div>
-        <div id="skills-list"><div class="empty">загрузка...</div></div>
-      </div>
-
-      <div class="card" id="skill-preview-card" style="display:none">
-        <div class="card-title" style="justify-content:space-between">
-          <span id="skill-preview-title">SKILL.md</span>
-          <button class="btn btn-ghost btn-sm" onclick="closeSkillPreview()">✕ Закрыть</button>
-        </div>
-        <div class="artifact-output visible" id="skill-preview-content" style="max-height:500px"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">◎ Создать доменный скилл из базы знаний</div>
-        <div style="font-size:11px;color:var(--text2);margin-bottom:14px;line-height:1.6">
-          Извлекает предметную экспертизу из обработанных документов проекта — термины, бизнес-правила, специфику технологий.
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-          <div class="field">
-            <label>Проект</label>
-            <select id="skill-from-knowledge-jira">
-              <option value="">— выберите проект —</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Имя скилла (опционально)</label>
-            <input type="text" id="skill-from-knowledge-name" placeholder="автоматически: JIRA-domain" />
-          </div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn-primary" onclick="createSkillFromKnowledge()" id="btn-create-skill-knowledge" style="background:rgba(56,189,248,0.15);border:1px solid rgba(56,189,248,0.3);color:var(--cyan)">
-            <span>◎</span> Создать из знаний проекта
-          </button>
-        </div>
-        <div class="terminal" id="terminal-skills-knowledge"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">⊕ Создать скилл из PDF книги</div>
-        <div class="field">
-          <label>Путь к PDF файлу</label>
-          <input type="text" id="skill-pdf-path" placeholder="/path/to/book.pdf" />
-        </div>
-        <div class="field">
-          <label>Имя скилла (опционально — автоматически из имени файла)</label>
-          <input type="text" id="skill-name-input" placeholder="clean-architecture" />
-        </div>
-        <div class="btn-row">
-          <button class="btn btn-primary" onclick="createSkill()" id="btn-create-skill">
-            <span>▶</span> Создать скилл
-          </button>
-        </div>
-        <div class="terminal" id="terminal-skills"></div>
       </div>
     </div>
 
@@ -794,7 +772,7 @@ function renderProjectsList() {
 
 function populateSelects() {
   const opts = state.projects.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
-  ['skipped-jira','chat-jira','artifact-jira','skill-from-knowledge-jira'].forEach(id => {
+  ['skipped-jira','chat-jira','artifact-jira'].forEach(id => {
     const el = document.getElementById(id);
     const prev = el.value;
     el.innerHTML = '<option value="">— выберите проект —</option>' + opts;
@@ -803,7 +781,7 @@ function populateSelects() {
   const tmplOpts = state.templates.map(t => `<option value="${t.name}">${t.name}</option>`).join('');
   document.getElementById('artifact-type').innerHTML = '<option value="">— шаблон —</option>' + tmplOpts;
   if (state.project) {
-    ['skipped-jira','chat-jira','artifact-jira','skill-from-knowledge-jira'].forEach(id => {
+    ['skipped-jira','chat-jira','artifact-jira'].forEach(id => {
       document.getElementById(id).value = state.project;
     });
   }
@@ -811,12 +789,6 @@ function populateSelects() {
 
 function renderOverview() {
   const el = document.getElementById('projects-overview');
-  // Показываем кнопку Обработать если есть выбранный проект
-  const procBtn = document.getElementById('btn-process');
-  if (procBtn && state.project) {
-    procBtn.style.display = 'inline-flex';
-    procBtn.setAttribute('data-jira', state.project);
-  }
   if (!state.projects.length) { el.innerHTML = ''; return; }
   el.innerHTML = `
     <div class="card">
@@ -842,6 +814,9 @@ function selectProject(name) {
   renderProjectsList();
   populateSelects();
   document.getElementById('ingest-jira').value = name;
+  document.getElementById('card-skill').style.display = 'block';
+  document.getElementById('card-process').style.display = 'block';
+  checkSkillStatus(name);
 }
 
 // === REPLACE FILE ===
@@ -896,14 +871,13 @@ async function deleteProject(name) {
 // === VIEWS ===
 function showView(view) {
   state.view = view;
-  ['ingest','skipped','chat','artifact','skills','settings'].forEach(v => {
+  ['ingest','skipped','chat','artifact','settings'].forEach(v => {
     document.getElementById(`view-${v}`).style.display = v === view ? 'block' : 'none';
     document.getElementById(`nav-${v}`).classList.toggle('active', v === view);
   });
-  const titles = { ingest:'Загрузить проект', skipped:'Пропущенные файлы', chat:'Спросить модель', artifact:'Генерация артефакта', skills:'Скиллы', settings:'Настройки' };
+  const titles = { ingest:'Загрузить проект', skipped:'Пропущенные файлы', chat:'Спросить модель', artifact:'Генерация артефакта', settings:'Настройки' };
   document.getElementById('view-title').textContent = titles[view];
   if (view === 'skipped' && state.project) loadSkipped();
-  if (view === 'skills') loadSkillsList();
 }
 
 // === STOP / SKIP ===
@@ -911,13 +885,18 @@ var _activeOpType = null; var _activeOpJira = null;
 
 function setRunning(type, jira) {
   _activeOpType = type; _activeOpJira = jira;
-  document.getElementById('btn-stop').style.display = 'inline-flex';
-  if (type === 'process') document.getElementById('btn-skip').style.display = 'inline-flex';
+  if (type === 'ingest') {
+    document.getElementById('btn-stop').style.display = 'inline-flex';
+  } else if (type === 'process') {
+    document.getElementById('btn-stop-process').style.display = 'inline-flex';
+    document.getElementById('btn-skip-process').style.display = 'inline-flex';
+  }
 }
 function setIdle() {
   _activeOpType = null; _activeOpJira = null;
-  document.getElementById('btn-stop').style.display = 'none';
-  document.getElementById('btn-skip').style.display = 'none';
+  ['btn-stop','btn-stop-process','btn-skip-process'].forEach(function(id) {
+    var el = document.getElementById(id); if (el) el.style.display = 'none';
+  });
 }
 
 async function stopOperation() {
@@ -930,7 +909,8 @@ async function stopOperation() {
 async function skipCurrentFile() {
   if (!_activeOpJira) return;
   await fetch(`${API}/skip/${_activeOpJira}`, { method: 'POST' });
-  document.getElementById('terminal-ingest').textContent += '\n[пропуск текущего файла...]\n';
+  var term = document.getElementById(_activeOpType === 'process' ? 'terminal-process' : 'terminal-ingest');
+  if (term) term.textContent += '\n[пропуск текущего файла...]\n';
 }
 
 // === INGEST ===
@@ -955,20 +935,17 @@ async function runIngest() {
   }
   setIdle();
   btn.disabled = false; btn.innerHTML = '<span>⊕</span> Загрузить и конвертировать';
-  const procBtn = document.getElementById('btn-process');
-  procBtn.style.display = 'inline-flex';
-  procBtn.setAttribute('data-jira', jira);
   selectProject(jira);
   await loadProjects(); renderProjectsList(); renderOverview();
 }
 
 async function runProcess() {
-  const jira = document.getElementById('btn-process').getAttribute('data-jira') || state.project;
+  const jira = state.project;
   if (!jira) return alert('Выбери проект');
   const btn = document.getElementById('btn-process');
-  const term = document.getElementById('terminal-ingest');
+  const term = document.getElementById('terminal-process');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Обрабатываю...';
-  term.className = 'terminal visible';
+  term.style.display = 'block'; term.className = 'terminal visible'; term.textContent = '';
   setRunning('process', jira);
 
   const progressBlock = document.getElementById('progress-block');
@@ -988,6 +965,7 @@ async function runProcess() {
     const chunk = decoder.decode(value);
     term.textContent += chunk;
     term.scrollTop = term.scrollHeight;
+    if (progressBlock && progressBlock.style.display === 'none') progressBlock.style.display = 'block';
 
     var match = chunk.match(/\[(\d+)\/(\d+)\]/);
     if (match) {
@@ -1012,7 +990,7 @@ async function runProcess() {
     }
   }
   setIdle();
-  btn.disabled = false; btn.innerHTML = '<span>▶</span> Обработать через Ollama';
+  btn.disabled = false; btn.innerHTML = '<span>▶</span> Запустить обработку';
   await loadProjects(); renderProjectsList(); renderOverview();
 }
 
@@ -1557,119 +1535,89 @@ async function testClaude() {
   btn.disabled = false; btn.innerHTML = '<span>✦</span> Проверить соединение';
 }
 
-// === SKILLS ===
-async function loadSkillsList() {
-  const el = document.getElementById('skills-list');
-  const countEl = document.getElementById('skills-count');
-  el.innerHTML = '<div class="empty">загрузка...</div>';
-  const r = await fetch(API + '/skills').catch(() => null);
-  const skills = r ? await r.json().catch(() => []) : [];
-  if (!skills.length) { el.innerHTML = '<div class="empty">Нет скиллов — создай первый из PDF книги ниже</div>'; countEl.textContent = '0 скиллов'; return; }
-  countEl.textContent = skills.length + ' ' + (skills.length === 1 ? 'скилл' : skills.length < 5 ? 'скилла' : 'скиллов');
-  el.innerHTML = '<div class="file-list">' + skills.map(s => `
-    <div class="file-item" style="flex-wrap:wrap;gap:8px">
-      <span class="file-name" style="font-weight:500">${escHtml(s.name)}</span>
-      ${s.builtin ? '<span class="tag green">built-in</span>' : ''}
-      ${s.source ? '<span class="file-type">' + escHtml(s.source) + '</span>' : ''}
-      ${s.date ? '<span style="font-size:10px;color:var(--text3)">' + escHtml(s.date) + '</span>' : ''}
-      <span style="font-size:10px;color:var(--text3)">${s.lines} строк</span>
-      <div style="margin-left:auto;display:flex;gap:6px">
-        <button class="btn btn-ghost btn-sm" onclick="viewSkill('${escHtml(s.name)}')">👁 Просмотр</button>
-        ${!s.builtin ? '<button class="btn btn-danger btn-sm" onclick="deleteSkill(\'' + escHtml(s.name) + '\')">✕</button>' : ''}
-      </div>
-      ${s.desc ? '<div style="width:100%;font-size:11px;color:var(--text2);padding-top:2px">' + escHtml(s.desc) + '</div>' : ''}
-    </div>`).join('') + '</div>';
-}
-
-async function viewSkill(name) {
-  const card = document.getElementById('skill-preview-card');
-  const content = document.getElementById('skill-preview-content');
-  const title = document.getElementById('skill-preview-title');
-  card.style.display = 'block';
-  content.innerHTML = '<span style="color:var(--text3)">загрузка...</span>';
-  title.textContent = name + ' / SKILL.md';
-  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  const r = await fetch(API + '/skills/' + encodeURIComponent(name));
-  const text = await r.text();
-  if (typeof marked !== 'undefined') {
-    content.innerHTML = marked.parse(text);
+// === SKILL (per-project) ===
+async function checkSkillStatus(jira) {
+  const badge = document.getElementById('skill-status-badge');
+  const textarea = document.getElementById('skill-textarea');
+  if (!badge) return;
+  badge.textContent = 'проверяю...';
+  const r = await fetch(`${API}/skill/${jira}`).catch(() => null);
+  if (!r) { badge.textContent = ''; return; }
+  const data = await r.json().catch(() => ({}));
+  if (data.exists) {
+    badge.textContent = '✓ SKILL.md сохранён';
+    badge.style.color = 'var(--green)';
+    if (data.content && textarea && !textarea.value) textarea.value = data.content;
   } else {
-    content.style.whiteSpace = 'pre-wrap';
-    content.textContent = text;
+    badge.textContent = 'скилл не создан — будет использован дефолтный';
+    badge.style.color = 'var(--text3)';
+    if (textarea) textarea.value = '';
   }
 }
 
-function closeSkillPreview() {
-  document.getElementById('skill-preview-card').style.display = 'none';
+async function analyzeForSkill() {
+  const jira = document.getElementById('ingest-jira').value.trim() || state.project;
+  if (!jira) return alert('Выбери или введи Project Label');
+  const btn = document.getElementById('btn-analyze-skill');
+  const textarea = document.getElementById('skill-textarea');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Анализирую...';
+  textarea.value = '';
+  textarea.placeholder = 'Генерирую предложение скилла...';
+
+  const r = await fetch(`${API}/analyze-for-skill`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jira })
+  }).catch(() => null);
+
+  if (!r || !r.ok) {
+    const text = r ? await r.text() : 'нет ответа';
+    textarea.placeholder = 'Ошибка: ' + text;
+    btn.disabled = false; btn.innerHTML = '<span>⇒</span> Проанализировать и предложить скилл';
+    return;
+  }
+
+  const reader = r.body.getReader(); const decoder = new TextDecoder();
+  let content = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    content += decoder.decode(value);
+    textarea.value = content;
+    textarea.scrollTop = textarea.scrollHeight;
+  }
+  textarea.placeholder = '';
+  btn.disabled = false; btn.innerHTML = '<span>⇒</span> Проанализировать и предложить скилл';
 }
 
-async function deleteSkill(name) {
-  if (!confirm('Удалить скилл "' + name + '"?\n\nБудет удалена папка skills/' + name + '/')) return;
-  const r = await fetch(API + '/skills/' + encodeURIComponent(name), { method: 'DELETE' });
-  const data = await r.json();
+async function saveSkill() {
+  const jira = document.getElementById('ingest-jira').value.trim() || state.project;
+  const content = document.getElementById('skill-textarea').value.trim();
+  if (!jira) return alert('Выбери или введи Project Label');
+  if (!content) return alert('Нет содержимого для сохранения');
+  const btn = document.getElementById('btn-save-skill');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Сохраняю...';
+
+  const r = await fetch(`${API}/save-skill`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jira, content })
+  }).catch(() => null);
+  const data = r ? await r.json().catch(() => ({})) : {};
+
   if (data.ok) {
-    closeSkillPreview();
-    loadSkillsList();
+    btn.innerHTML = '<span>✓</span> Сохранено!';
+    const badge = document.getElementById('skill-status-badge');
+    if (badge) { badge.textContent = '✓ SKILL.md сохранён'; badge.style.color = 'var(--green)'; }
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = '<span>✓</span> Сохранить SKILL.md'; }, 2000);
   } else {
-    alert('Ошибка: ' + (data.error || 'неизвестная'));
+    btn.innerHTML = '<span>✗</span> Ошибка';
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = '<span>✓</span> Сохранить SKILL.md'; }, 2000);
   }
 }
 
-async function createSkill() {
-  const pdfPath = document.getElementById('skill-pdf-path').value.trim();
-  const skillName = document.getElementById('skill-name-input').value.trim();
-  if (!pdfPath) return alert('Укажи путь к PDF файлу');
-  const btn = document.getElementById('btn-create-skill');
-  const term = document.getElementById('terminal-skills');
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Создаю скилл...';
-  term.className = 'terminal visible'; term.textContent = '';
-
-  const r = await fetch(API + '/skills/create', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pdfPath, skillName: skillName || undefined })
-  });
-  const reader = r.body.getReader(); const decoder = new TextDecoder();
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    term.textContent += decoder.decode(value);
-    term.scrollTop = term.scrollHeight;
-  }
-  btn.disabled = false; btn.innerHTML = '<span>▶</span> Создать скилл';
-  if (term.textContent.includes('[exit 0]')) {
-    document.getElementById('skill-pdf-path').value = '';
-    document.getElementById('skill-name-input').value = '';
-    loadSkillsList();
-  }
-}
-
-async function createSkillFromKnowledge() {
-  const jira = document.getElementById('skill-from-knowledge-jira').value;
-  const skillName = document.getElementById('skill-from-knowledge-name').value.trim();
-  if (!jira) return alert('Выбери проект');
-  const btn = document.getElementById('btn-create-skill-knowledge');
-  const term = document.getElementById('terminal-skills-knowledge');
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Генерирую...';
-  term.className = 'terminal visible'; term.textContent = '';
-
-  const r = await fetch(API + '/skills/create-from-knowledge', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jira, skillName: skillName || undefined })
-  });
-  const reader = r.body.getReader(); const decoder = new TextDecoder();
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    term.textContent += decoder.decode(value);
-    term.scrollTop = term.scrollHeight;
-  }
-  btn.disabled = false; btn.innerHTML = '<span>◎</span> Создать из знаний проекта';
-  if (term.textContent.includes('[exit 0]')) {
-    document.getElementById('skill-from-knowledge-name').value = '';
-    loadSkillsList();
-  }
+function skipSkillStep() {
+  document.getElementById('card-process').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 init();

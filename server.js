@@ -611,6 +611,81 @@ ${context.slice(0, 14000)}
       return;
     }
 
+    // GET /api/skill/:jira — check if project skill exists
+    if (req.method === 'GET' && url.pathname.startsWith('/api/skill/')) {
+      const jira = url.pathname.split('/').pop();
+      const skillPath = join(__dirname, 'knowledge', 'projects', jira, 'SKILL.md');
+      if (!existsSync(skillPath)) return json(res, { exists: false });
+      return json(res, { exists: true, content: readFileSync(skillPath, 'utf8') });
+    }
+
+    // POST /api/analyze-for-skill — sample raw docs and suggest a skill via Ollama (streaming)
+    if (req.method === 'POST' && url.pathname === '/api/analyze-for-skill') {
+      const { jira } = await getBody(req);
+      if (!jira) return json(res, { error: 'jira обязателен' }, 400);
+      const rawDir = join(__dirname, 'raw', jira);
+      if (!existsSync(rawDir)) return json(res, { error: 'raw папка не найдена' }, 404);
+
+      // Sample first 2000 chars of body (skip frontmatter) from up to 5 files
+      const mdFiles = readdirSync(rawDir).filter(f => f.endsWith('.md')).slice(0, 5);
+      let samples = '';
+      for (const f of mdFiles) {
+        const raw = readFileSync(join(rawDir, f), 'utf8');
+        const body = raw.replace(/^---[\s\S]+?---\n?/, '').trim();
+        if (body.length > 100) samples += `\n\n### ${f}\n${body.slice(0, 2000)}`;
+      }
+      if (!samples.trim()) return json(res, { error: 'нет контента в raw файлах' }, 400);
+
+      const prompt = `Проанализируй отрывки документов из проекта "${jira}" и создай SKILL.md — системный промпт для LLM который будет обрабатывать эти документы.
+
+SKILL.md должен содержать:
+1. Описание домена и типа документов (1-2 предложения)
+2. Задачу модели: что именно нужно извлекать из каждого документа
+3. Строку: "Отвечай ТОЛЬКО валидным JSON без пояснений."
+4. Структуру JSON ответа с полями подходящими для этого домена, с примерами значений
+
+Примеры структур по доменам:
+- IT-архитектура: requirements, architecture, risks, adrs, open_questions, stakeholders
+- Книги/статьи по бизнесу/аналитике: insights, methods, key_quotes, concepts, applications
+- Протоколы встреч: decisions, action_items, open_questions, participants
+- Научные статьи: findings, hypotheses, evidence, methodology, conclusions
+
+Отрывки документов проекта:
+${samples.slice(0, 8000)}
+
+Верни ТОЛЬКО текст SKILL.md, без пояснений и markdown-блоков.`;
+
+      cors(res); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Transfer-Encoding': 'chunked' });
+      try {
+        const r = await fetch('http://localhost:11434/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: ENV.OLLAMA_MODEL || 'llama3.1:8b', prompt, stream: true, options: { temperature: 0.3, num_ctx: 4096 } }),
+          signal: AbortSignal.timeout(120000)
+        });
+        const rdr = r.body.getReader(); const dec = new TextDecoder();
+        while (true) {
+          const { value, done } = await rdr.read();
+          if (done) break;
+          for (const line of dec.decode(value).split('\n').filter(Boolean)) {
+            try { const o = JSON.parse(line); if (o.response) res.write(o.response); } catch {}
+          }
+        }
+        res.end();
+      } catch(e) { res.end('\nОшибка: ' + e.message); }
+      return;
+    }
+
+    // POST /api/save-skill — save project SKILL.md
+    if (req.method === 'POST' && url.pathname === '/api/save-skill') {
+      const { jira, content } = await getBody(req);
+      if (!jira || !content) return json(res, { error: 'jira и content обязательны' }, 400);
+      const knowledgeDir = join(__dirname, 'knowledge', 'projects', jira);
+      if (!existsSync(knowledgeDir)) mkdirSync(knowledgeDir, { recursive: true });
+      writeFileSync(join(knowledgeDir, 'SKILL.md'), content);
+      return json(res, { ok: true });
+    }
+
     return json(res, { error: 'Not found' }, 404);
   }
 
