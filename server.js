@@ -150,7 +150,8 @@ const server = createServer(async (req, res) => {
       const { jira } = await getBody(req);
       if (!jira) return json(res, { error: 'jira обязателен' }, 400);
       cors(res); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Transfer-Encoding': 'chunked' });
-      const child = exec(`OLLAMA_MODEL="${ENV.OLLAMA_MODEL || 'llama3.1:8b'}" bash "${join(__dirname, 'scripts', 'process.sh')}" "${jira}"`);
+      const child = exec(`bash "${join(__dirname, 'scripts', 'process.sh')}" "${jira}"`,
+        { env: { ...process.env, OLLAMA_MODEL: ENV.OLLAMA_MODEL || 'llama3.1:8b' } });
       child.stdout.on('data', d => res.write(d));
       child.stderr.on('data', d => res.write(d));
       child.on('close', code => res.end(`\n[exit ${code}]`));
@@ -190,14 +191,16 @@ ${context.slice(0, 14000)}
 
 Вопрос: ${question}`;
       cors(res); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Transfer-Encoding': 'chunked' });
-      const payload = JSON.stringify({ model: 'llama3.1:8b', prompt, stream: false, options: { temperature: 0.1, num_ctx: 8192 } });
-      const child = exec(`curl -s -m 120 -X POST http://localhost:11434/api/generate -H 'Content-Type: application/json' -d '${payload.replace(/'/g, "'\\''")}'`);
-      let out = '';
-      child.stdout.on('data', d => out += d);
-      child.on('close', () => {
-        try { res.end(JSON.parse(out).response || 'Нет ответа'); }
-        catch { res.end('Ошибка модели'); }
-      });
+      try {
+        const r = await fetch('http://localhost:11434/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: ENV.OLLAMA_MODEL || 'llama3.1:8b', prompt, stream: false, options: { temperature: 0.1, num_ctx: 8192 } }),
+          signal: AbortSignal.timeout(120000)
+        });
+        const data = await r.json();
+        res.end(data.response || 'Нет ответа');
+      } catch(e) { res.end('Ошибка модели: ' + e.message); }
       return;
     }
 
@@ -211,14 +214,16 @@ ${context.slice(0, 14000)}
       const sectionNote = section ? `Сфокусируйся на разделе: "${section}".` : 'Заполни все разделы шаблона.';
       const prompt = `Ты Solution Architect. На основе базы знаний проекта ${jira} помоги заполнить архитектурный документ.\n\n${sectionNote}\n\nШаблон документа:\n${tmplContent}\n\nБаза знаний проекта:\n${context.slice(0, 10000)}\n\nСгенерируй контент для указанного раздела на основе знаний из базы. Отвечай по-русски. Если данных недостаточно — укажи что именно нужно уточнить.`;
       cors(res); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Transfer-Encoding': 'chunked' });
-      const payload = JSON.stringify({ model: 'llama3.1:8b', prompt, stream: false, options: { temperature: 0.2, num_ctx: 8192 } });
-      const child = exec(`curl -s -m 120 -X POST http://localhost:11434/api/generate -H 'Content-Type: application/json' -d '${payload.replace(/'/g, "'\\''")}'`);
-      let out = '';
-      child.stdout.on('data', d => out += d);
-      child.on('close', () => {
-        try { res.end(JSON.parse(out).response || 'Нет ответа'); }
-        catch { res.end('Ошибка модели'); }
-      });
+      try {
+        const r = await fetch('http://localhost:11434/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: ENV.OLLAMA_MODEL || 'llama3.1:8b', prompt, stream: false, options: { temperature: 0.2, num_ctx: 8192 } }),
+          signal: AbortSignal.timeout(120000)
+        });
+        const data = await r.json();
+        res.end(data.response || 'Нет ответа');
+      } catch(e) { res.end('Ошибка модели: ' + e.message); }
       return;
     }
 
@@ -285,7 +290,7 @@ ${context.slice(0, 14000)}
         cmd = `cp "${tmpPath}" "${outTmp}"`;
       }
 
-      const child = exec(cmd);
+      const child = exec(cmd, { shell: 'bash' });
       child.stderr.on('data', d => res.write('[warn] ' + d));
       child.on('close', (code) => {
         try {
@@ -389,21 +394,21 @@ ${context.slice(0, 14000)}
         messages: [{ role: 'user', content: userPrompt }]
       });
 
-      const child = exec(`curl -s -m 120 -X POST https://api.anthropic.com/v1/messages \
-        -H 'Content-Type: application/json' \
-        -H 'x-api-key: ${ENV.ANTHROPIC_API_KEY}' \
-        -H 'anthropic-version: 2023-06-01' \
-        -d '${payload.replace(/'/g, "'\\''")}'`);
-
-      let out = '';
-      child.stdout.on('data', d => out += d);
-      child.on('close', () => {
-        try {
-          const data = JSON.parse(out);
-          if (data.error) res.end('Ошибка API: ' + data.error.message);
-          else res.end(data.content?.[0]?.text || 'Нет ответа');
-        } catch { res.end('Ошибка парсинга ответа'); }
-      });
+      try {
+        const r = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': ENV.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01'
+          },
+          body: payload,
+          signal: AbortSignal.timeout(120000)
+        });
+        const data = await r.json();
+        if (data.error) res.end('Ошибка API: ' + data.error.message);
+        else res.end(data.content?.[0]?.text || 'Нет ответа');
+      } catch(e) { res.end('Ошибка запроса: ' + e.message); }
       return;
     }
 
@@ -475,7 +480,7 @@ ${context.slice(0, 14000)}
       cors(res); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Transfer-Encoding': 'chunked' });
       const nameArg = skillName ? ` "${skillName}"` : '';
       const child = exec(
-        `echo y | OLLAMA_MODEL="${ENV.OLLAMA_MODEL || 'llama3.1:8b'}" bash "${join(__dirname, 'scripts', 'create_skill_from_knowledge.sh')}" "${jira}"${nameArg}`,
+        `echo y | bash "${join(__dirname, 'scripts', 'create_skill_from_knowledge.sh')}" "${jira}"${nameArg}`,
         { env: { ...process.env, OLLAMA_MODEL: ENV.OLLAMA_MODEL || 'llama3.1:8b' } }
       );
       child.stdout.on('data', d => res.write(d));
@@ -491,7 +496,7 @@ ${context.slice(0, 14000)}
       cors(res); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Transfer-Encoding': 'chunked' });
       const nameArg = skillName ? ` "${skillName}"` : '';
       const child = exec(
-        `echo y | OLLAMA_MODEL="${ENV.OLLAMA_MODEL || 'llama3.1:8b'}" bash "${join(__dirname, 'scripts', 'process_book.sh')}" "${pdfPath}"${nameArg}`,
+        `echo y | bash "${join(__dirname, 'scripts', 'process_book.sh')}" "${pdfPath}"${nameArg}`,
         { env: { ...process.env, OLLAMA_MODEL: ENV.OLLAMA_MODEL || 'llama3.1:8b', ANTHROPIC_API_KEY: ENV.ANTHROPIC_API_KEY || '' } }
       );
       child.stdout.on('data', d => res.write(d));
