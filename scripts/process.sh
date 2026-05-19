@@ -355,7 +355,7 @@ except Exception as e:
   print(f'json parse error: {e}', file=sys.stderr)
   sys.exit(0)
 project = os.path.basename(knowledge_dir)
-HEADING_KEYS = ('title','name','role','question','concept','finding','decision','insight','method','action','quote','author')
+HEADING_KEYS = ('title','name','role','question','concept','finding','decision','insight','method','action','quote','author','term','definition','theory')
 for key, items in data.items():
   if not isinstance(items, list) or not items:
     continue
