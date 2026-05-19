@@ -76,10 +76,27 @@ MAX_CHARS="${MAX_CHARS:-$(_auto_max_chars)}"
 NUM_CTX=$(( (MAX_CHARS + 2048 + 511) / 512 * 512 ))
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; NC='\033[0m'
-log()  { echo -e "${GREEN}[process]${NC} $*"; }
-info() { echo -e "${BLUE}[process]${NC} $*"; }
-warn() { echo -e "${YELLOW}[warn]${NC}    $*"; }
-err()  { echo -e "${RED}[error]${NC}   $*" >&2; }
+
+# --- лог-файл для постмортемов ---
+LOG_DIR="$BRAIN_DIR/logs"
+mkdir -p "$LOG_DIR"
+RUN_TS="$(date '+%Y%m%d_%H%M%S')"
+LOG_FILE="$LOG_DIR/process-${JIRA}-${RUN_TS}.log"
+
+_ts() { date '+%Y-%m-%d %H:%M:%S'; }
+
+tee_log() {
+  # пишет строку и в терминал, и в лог (без ANSI-цветов в файле)
+  local msg="$*"
+  local clean="${msg//$'\033'[*m/}"
+  clean="$(printf '%s' "$clean" | sed 's/\x1b\[[0-9;]*m//g')"
+  printf '[%s] %s\n' "$(_ts)" "$clean" >> "$LOG_FILE"
+}
+
+log()  { local m="${GREEN}[process]${NC} $*"; echo -e "$m"; tee_log "[OK]  $*"; }
+info() { local m="${BLUE}[process]${NC} $*";  echo -e "$m"; tee_log "[INFO] $*"; }
+warn() { local m="${YELLOW}[warn]${NC}    $*"; echo -e "$m"; tee_log "[WARN] $*"; }
+err()  { local m="${RED}[error]${NC}   $*";  echo -e "$m" >&2; tee_log "[ERR]  $*"; }
 
 if [[ -z "$JIRA" ]]; then
   err "Использование: $0 <JIRA-ID>"
@@ -99,6 +116,7 @@ SYSTEM_PROMPT="Ты извлекаешь знания из документов 
 COUNT_OK=0; COUNT_SKIP=0; COUNT_ERR=0
 
 log "Тикет: $JIRA | Модель: $MODEL | Лимит: ${MAX_CHARS} символов | Таймаут: ${TIMEOUT}с"
+info "Лог: $LOG_FILE"
 echo ""
 
 # --- файлы без архитектурного смысла — пропускаем ---
@@ -152,15 +170,27 @@ call_ollama_single() {
 ДОКУМЕНТ ($ref, тип: $doc_type):
 $content"
 
-  curl -s --max-time "$TIMEOUT" -X POST "$OLLAMA_URL" \
+  local payload
+  payload="$(jq -n \
+    --arg model "$MODEL" \
+    --arg system "$SYSTEM_PROMPT" \
+    --arg prompt "$prompt" \
+    --argjson num_ctx "$NUM_CTX" \
+    '{model: $model, system: $system, prompt: $prompt, stream: true, format: "json", options: {temperature: 0.1, num_ctx: $num_ctx}}')"
+
+  local full_response="" tok dots=0
+  while IFS= read -r line; do
+    tok="$(printf '%s' "$line" | jq -r '.response // empty' 2>/dev/null)"
+    if [[ -n "$tok" ]]; then
+      full_response+="$tok"
+      (( ++dots % 30 == 0 )) && printf "·" >&2
+    fi
+  done < <(curl -s --max-time "$TIMEOUT" -X POST "$OLLAMA_URL" \
     -H "Content-Type: application/json" \
-    -d "$(jq -n \
-      --arg model "$MODEL" \
-      --arg system "$SYSTEM_PROMPT" \
-      --arg prompt "$prompt" \
-      --argjson num_ctx "$NUM_CTX" \
-      '{model: $model, system: $system, prompt: $prompt, stream: false, format: "json", options: {temperature: 0.1, num_ctx: $num_ctx}}'
-    )" | jq -r '.response // empty'
+    -d "$payload")
+  (( dots > 0 )) && printf "\n" >&2
+
+  printf '%s' "$full_response"
 }
 
 # --- JSON → markdown файлы ---
@@ -254,15 +284,24 @@ while IFS= read -r -d '' filepath; do
 
   doc_type="$(detect_doc_type "$filepath")"
   ref="[[${filename%.md}]]"
+  chars="$(printf '%s' "$content" | wc -c | tr -d ' ')"
 
-  info "  → 1 запрос (тип: $doc_type, размер: $(echo "$content" | wc -c | tr -d ' ') символов)..."
+  info "  → 1 запрос (тип: $doc_type, размер: ${chars} символов)..."
+  tee_log "[START-MODEL] file=$filename doc_type=$doc_type chars=$chars model=$MODEL num_ctx=$NUM_CTX"
 
+  t_start="$(date +%s)"
   response="$(call_ollama_single "$content" "$ref" "$doc_type")"
+  t_end="$(date +%s)"
+  elapsed=$(( t_end - t_start ))
 
   if [[ -z "$response" ]]; then
-    warn "  Таймаут или пустой ответ — пропускаю: $filename"
+    warn "  Таймаут или пустой ответ (${elapsed}с) — пропускаю: $filename"
+    tee_log "[TIMEOUT] file=$filename elapsed=${elapsed}s"
     ((COUNT_ERR++))
   else
+    resp_len="${#response}"
+    info "  ✓ Ответ получен за ${elapsed}с (${resp_len} символов)"
+    tee_log "[END-MODEL] file=$filename elapsed=${elapsed}s response_len=${resp_len}"
     json_to_files "$response"
     ((COUNT_OK++))
   fi
@@ -280,3 +319,10 @@ echo -e "  ${RED}✗ Таймауты:${NC}    $COUNT_ERR"
 echo ""
 log "База знаний: $KNOWLEDGE_JIRA"
 ls "$KNOWLEDGE_JIRA/" 2>/dev/null | while read f; do echo "  - $f"; done
+tee_log "[DONE] ok=$COUNT_OK skip=$COUNT_SKIP err=$COUNT_ERR"
+
+if [[ "$COUNT_ERR" -eq 0 ]]; then
+  rm -f "$LOG_FILE"
+else
+  log "Лог ошибок/таймаутов: $LOG_FILE"
+fi

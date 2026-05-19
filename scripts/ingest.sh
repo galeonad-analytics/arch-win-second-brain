@@ -19,9 +19,18 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-log()  { echo -e "${GREEN}[ingest]${NC} $*"; }
-warn() { echo -e "${YELLOW}[warn]${NC}  $*"; }
-err()  { echo -e "${RED}[error]${NC} $*" >&2; }
+# --- лог-файл ---
+LOG_DIR="$BRAIN_DIR/logs"
+mkdir -p "$LOG_DIR"
+RUN_TS="$(date '+%Y%m%d_%H%M%S')"
+LOG_FILE="$LOG_DIR/ingest-${JIRA:-unknown}-${RUN_TS}.log"
+
+_ts() { date '+%Y-%m-%d %H:%M:%S'; }
+tee_log() { printf '[%s] %s\n' "$(_ts)" "$*" >> "$LOG_FILE"; }
+
+log()  { echo -e "${GREEN}[ingest]${NC} $*"; tee_log "[OK]  $*"; }
+warn() { echo -e "${YELLOW}[warn]${NC}  $*"; tee_log "[WARN] $*"; }
+err()  { echo -e "${RED}[error]${NC} $*" >&2; tee_log "[ERR]  $*"; }
 
 # --- проверка аргументов ---
 if [[ -z "$JIRA" || -z "$SOURCE_DIR" ]]; then
@@ -50,6 +59,7 @@ check_dep magick imagemagick
 TARGET_DIR="$RAW_DIR/$JIRA"
 mkdir -p "$TARGET_DIR"
 log "Папка назначения: $TARGET_DIR"
+tee_log "[START] jira=$JIRA source=$SOURCE_DIR"
 
 # --- счётчики ---
 COUNT_OK=0
@@ -128,15 +138,20 @@ while IFS= read -r -d '' filepath; do
     .* | ~$* | *.tmp | Thumbs.db | .DS_Store) continue ;;
   esac
 
+  tee_log "[FILE-START] $filename ext=$ext_lower"
+
   case "$ext_lower" in
 
     pdf)
       log "PDF → md: $filename"
+      tee_log "[FILE] $filename ext=pdf"
+      t0="$(date +%s)"
       if pandoc "$filepath" -t markdown --wrap=none -o "$out_path" 2>/dev/null; then
         # Проверяем что pandoc реально извлёк текст (не пустой файл)
         text_len="$(awk '/^---/{found++; if(found==2){skip=0; next}} found<2{next} {print}' "$out_path" | tr -d '[:space:]' | wc -c | tr -d ' ')"
         if [[ "$text_len" -gt 50 ]]; then
           add_frontmatter "$out_path" "$filepath" "pdf"
+          tee_log "[DONE] $filename method=pandoc chars=$text_len elapsed=$(( $(date +%s) - t0 ))s"
           COUNT_OK=$((COUNT_OK+1))
         else
           warn "pandoc извлёк пустой текст из: $filename — пробую pdftotext..."
@@ -394,3 +409,10 @@ if [[ ${#FAILED_FILES[@]} -gt 0 ]]; then
 fi
 
 log "Следующий шаг: ./scripts/process.sh $JIRA"
+tee_log "[DONE] ok=$COUNT_OK skip=$COUNT_SKIP err=$COUNT_ERR"
+
+if [[ "$COUNT_ERR" -eq 0 ]]; then
+  rm -f "$LOG_FILE"
+else
+  log "Лог ошибок: $LOG_FILE"
+fi
