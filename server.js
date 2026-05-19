@@ -614,7 +614,7 @@ ${context.slice(0, 14000)}
     // GET /api/skill/:jira — check if project skill exists
     if (req.method === 'GET' && url.pathname.startsWith('/api/skill/')) {
       const jira = url.pathname.split('/').pop();
-      const skillPath = join(__dirname, 'knowledge', 'projects', jira, 'SKILL.md');
+      const skillPath = join(__dirname, 'knowledge', 'projects', jira, jira + '-SKILL.md');
       if (!existsSync(skillPath)) return json(res, { exists: false });
       return json(res, { exists: true, content: readFileSync(skillPath, 'utf8') });
     }
@@ -682,7 +682,7 @@ ${samples.slice(0, 8000)}
       if (!jira || !content) return json(res, { error: 'jira и content обязательны' }, 400);
       const knowledgeDir = join(__dirname, 'knowledge', 'projects', jira);
       if (!existsSync(knowledgeDir)) mkdirSync(knowledgeDir, { recursive: true });
-      writeFileSync(join(knowledgeDir, 'SKILL.md'), content);
+      writeFileSync(join(knowledgeDir, jira + '-SKILL.md'), content);
       return json(res, { ok: true });
     }
 

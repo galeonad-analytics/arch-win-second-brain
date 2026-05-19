@@ -121,10 +121,10 @@ curl -s --max-time 5 "$OLLAMA_URL" > /dev/null 2>&1 || { err "Ollama не зап
 
 mkdir -p "$KNOWLEDGE_JIRA"
 # Если у проекта есть свой скилл — используем его; иначе дефолтный SA-промпт
-SKILL_FILE="$KNOWLEDGE_JIRA/SKILL.md"
+SKILL_FILE="$KNOWLEDGE_JIRA/${JIRA}-SKILL.md"
 if [[ -f "$SKILL_FILE" ]]; then
   SYSTEM_PROMPT="$(cat "$SKILL_FILE")"
-  info "Используется скилл проекта: SKILL.md"
+  info "Используется скилл проекта: ${JIRA}-SKILL.md"
 else
   SYSTEM_PROMPT="Ты извлекаешь знания из документов в структурированный JSON. Отвечай ТОЛЬКО валидным JSON без пояснений."
 fi
