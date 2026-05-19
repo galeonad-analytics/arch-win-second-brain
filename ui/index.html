@@ -501,7 +501,7 @@
           <span id="skill-status-badge" style="font-size:10px;font-weight:400;color:var(--text3)"></span>
         </div>
         <div style="font-size:11px;color:var(--text2);margin-bottom:14px;line-height:1.6">
-          Модель анализирует загруженные документы и предлагает инструкцию (SKILL.md), управляющую извлечением знаний. Без скилла используется дефолтный.
+          Модель анализирует загруженные документы и предлагает инструкцию (<span id="skill-filename-desc">JIRA-SKILL.md</span>), управляющую извлечением знаний. Без скилла используется дефолтный.
         </div>
         <div class="btn-row" style="margin-bottom:12px">
           <button class="btn btn-ghost" onclick="analyzeForSkill()" id="btn-analyze-skill">
@@ -512,12 +512,12 @@
           </button>
         </div>
         <div class="field">
-          <label>SKILL.md — инструкция для модели (редактируется вручную)</label>
+          <label id="skill-file-label"><span id="skill-filename-label">JIRA-SKILL.md</span> — инструкция для модели (редактируется вручную)</label>
           <textarea id="skill-textarea" placeholder="Нажми «Проанализировать» для автоматического предложения или введи инструкцию вручную..." style="min-height:260px;resize:vertical;font-size:11px;line-height:1.6"></textarea>
         </div>
         <div class="btn-row">
           <button class="btn btn-primary" onclick="saveSkill()" id="btn-save-skill">
-            <span>✓</span> Сохранить SKILL.md
+            <span>✓</span> Сохранить <span id="skill-filename-btn">JIRA-SKILL.md</span>
           </button>
         </div>
         <div class="terminal" id="terminal-skill" style="display:none"></div>
@@ -807,6 +807,13 @@ function renderOverview() {
     </div>`;
 }
 
+function updateSkillFilename(jira) {
+  const fname = jira ? jira + '-SKILL.md' : 'JIRA-SKILL.md';
+  ['skill-filename-desc','skill-filename-label','skill-filename-btn'].forEach(function(id) {
+    var el = document.getElementById(id); if (el) el.textContent = fname;
+  });
+}
+
 function selectProject(name) {
   if (state.project !== name) state.chatHistory = [];
   state.project = name;
@@ -816,6 +823,7 @@ function selectProject(name) {
   document.getElementById('ingest-jira').value = name;
   document.getElementById('card-skill').style.display = 'block';
   document.getElementById('card-process').style.display = 'block';
+  updateSkillFilename(name);
   checkSkillStatus(name);
 }
 
@@ -935,6 +943,7 @@ async function runIngest() {
   }
   setIdle();
   btn.disabled = false; btn.innerHTML = '<span>⊕</span> Загрузить и конвертировать';
+  updateSkillFilename(jira);
   selectProject(jira);
   await loadProjects(); renderProjectsList(); renderOverview();
 }
@@ -1544,8 +1553,9 @@ async function checkSkillStatus(jira) {
   const r = await fetch(`${API}/skill/${jira}`).catch(() => null);
   if (!r) { badge.textContent = ''; return; }
   const data = await r.json().catch(() => ({}));
+  const fname = jira + '-SKILL.md';
   if (data.exists) {
-    badge.textContent = '✓ SKILL.md сохранён';
+    badge.textContent = '✓ ' + fname + ' сохранён';
     badge.style.color = 'var(--green)';
     if (data.content && textarea && !textarea.value) textarea.value = data.content;
   } else {
@@ -1605,14 +1615,15 @@ async function saveSkill() {
   }).catch(() => null);
   const data = r ? await r.json().catch(() => ({})) : {};
 
+  const fname2 = jira + '-SKILL.md';
   if (data.ok) {
     btn.innerHTML = '<span>✓</span> Сохранено!';
     const badge = document.getElementById('skill-status-badge');
-    if (badge) { badge.textContent = '✓ SKILL.md сохранён'; badge.style.color = 'var(--green)'; }
-    setTimeout(() => { btn.disabled = false; btn.innerHTML = '<span>✓</span> Сохранить SKILL.md'; }, 2000);
+    if (badge) { badge.textContent = '✓ ' + fname2 + ' сохранён'; badge.style.color = 'var(--green)'; }
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = '<span>✓</span> Сохранить <span id="skill-filename-btn">' + fname2 + '</span>'; }, 2000);
   } else {
     btn.innerHTML = '<span>✗</span> Ошибка';
-    setTimeout(() => { btn.disabled = false; btn.innerHTML = '<span>✓</span> Сохранить SKILL.md'; }, 2000);
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = '<span>✓</span> Сохранить <span id="skill-filename-btn">' + fname2 + '</span>'; }, 2000);
   }
 }
 

@@ -636,31 +636,65 @@ ${context.slice(0, 14000)}
       }
       if (!samples.trim()) return json(res, { error: 'нет контента в raw файлах' }, 400);
 
-      const prompt = `Проанализируй отрывки документов из проекта "${jira}" и создай SKILL.md — системный промпт для LLM который будет обрабатывать эти документы.
+      const prompt = `Ты редактор базы знаний. Проанализируй отрывки документов проекта "${jira}" и напиши SKILL.md — инструкцию для LLM по извлечению знаний.
 
-SKILL.md должен содержать:
-1. Описание домена и типа документов (1-2 предложения)
-2. Задачу модели: что именно нужно извлекать из каждого документа
-3. Строку: "Отвечай ТОЛЬКО валидным JSON без пояснений."
-4. Структуру JSON ответа с полями подходящими для этого домена, с примерами значений
+ПРАВИЛА:
+- SKILL.md — это ИНСТРУКЦИЯ, а не каталог данных и не пример извлечения
+- Верни ТОЛЬКО markdown-текст SKILL.md, без пояснений
+- Не более 35 строк
+- Ровно 3 секции: ## Домен, ## Задача модели, ## JSON-структура
 
-Примеры структур по доменам:
-- IT-архитектура: requirements, architecture, risks, adrs, open_questions, stakeholders
-- Книги/статьи по бизнесу/аналитике: insights, methods, key_quotes, concepts, applications
-- Протоколы встреч: decisions, action_items, open_questions, participants
-- Научные статьи: findings, hypotheses, evidence, methodology, conclusions
+ФОРМАТ:
 
-Отрывки документов проекта:
-${samples.slice(0, 8000)}
+## Домен
+[одно предложение: тип документов и тематика]
 
-Верни ТОЛЬКО текст SKILL.md, без пояснений и markdown-блоков.`;
+## Задача модели
+[2-4 пункта со знаком - : что именно извлекать]
+
+## JSON-структура
+\`\`\`json
+{
+  "секция1": [{"id": "X-001", "поле": "описание поля", "source": "[[filename]]"}],
+  "секция2": [...]
+}
+\`\`\`
+Отвечай ТОЛЬКО валидным JSON без пояснений.
+
+---
+ПРИМЕРЫ для разных доменов (не копируй, адаптируй под реальные документы):
+
+Для книг по аналитике/данным/бизнесу:
+## Домен
+Научно-популярные книги об анализе данных, математике и принятии решений.
+## Задача модели
+- Извлекай практические инсайты и идеи, применимые в работе
+- Фиксируй методы и фреймворки с кратким описанием
+- Записывай сильные цитаты, точно выражающие суть
+- Выделяй ключевые концепции с объяснением
+## JSON-структура
+\`\`\`json
+{
+  "insights": [{"id": "I-001", "title": "название инсайта", "description": "суть идеи", "application": "как применить", "source": "[[filename]]"}],
+  "methods": [{"id": "M-001", "title": "метод", "description": "как работает", "source": "[[filename]]"}],
+  "key_quotes": [{"id": "Q-001", "quote": "цитата", "context": "контекст", "source": "[[filename]]"}],
+  "concepts": [{"id": "C-001", "concept": "термин", "definition": "определение", "source": "[[filename]]"}]
+}
+\`\`\`
+Отвечай ТОЛЬКО валидным JSON без пояснений.
+
+---
+Отрывки документов проекта (для понимания домена):
+${samples.slice(0, 5000)}
+
+Напиши SKILL.md для этого проекта:`;
 
       cors(res); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Transfer-Encoding': 'chunked' });
       try {
         const r = await fetch('http://localhost:11434/api/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: ENV.OLLAMA_MODEL || 'llama3.1:8b', prompt, stream: true, options: { temperature: 0.3, num_ctx: 4096 } }),
+          body: JSON.stringify({ model: ENV.OLLAMA_MODEL || 'llama3.1:8b', prompt, stream: true, options: { temperature: 0.2, num_ctx: 4096, num_predict: 900 } }),
           signal: AbortSignal.timeout(120000)
         });
         const rdr = r.body.getReader(); const dec = new TextDecoder();
@@ -682,7 +716,9 @@ ${samples.slice(0, 8000)}
       if (!jira || !content) return json(res, { error: 'jira и content обязательны' }, 400);
       const knowledgeDir = join(__dirname, 'knowledge', 'projects', jira);
       if (!existsSync(knowledgeDir)) mkdirSync(knowledgeDir, { recursive: true });
-      writeFileSync(join(knowledgeDir, jira + '-SKILL.md'), content);
+      // Strip wrapping ```markdown ... ``` or ``` ... ``` fences if model added them
+      const cleaned = content.replace(/^```(?:markdown)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+      writeFileSync(join(knowledgeDir, jira + '-SKILL.md'), cleaned);
       return json(res, { ok: true });
     }
 
