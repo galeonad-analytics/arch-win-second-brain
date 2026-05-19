@@ -123,11 +123,49 @@ mkdir -p "$KNOWLEDGE_JIRA"
 # Если у проекта есть свой скилл — используем его; иначе дефолтный SA-промпт
 SKILL_FILE="$KNOWLEDGE_JIRA/${JIRA}-SKILL.md"
 if [[ -f "$SKILL_FILE" ]]; then
-  SYSTEM_PROMPT="$(cat "$SKILL_FILE")"
+  SYSTEM_PROMPT="$(tr -d '\r' < "$SKILL_FILE" | sed 's/^```[a-z]*$//' | sed '/^```$/d' | sed '/^[[:space:]]*$/d' | sed '1{/^[[:space:]]*$/d}')"
+  SKILL_ACTIVE="true"
   info "Используется скилл проекта: ${JIRA}-SKILL.md"
 else
   SYSTEM_PROMPT="Ты извлекаешь знания из документов в структурированный JSON. Отвечай ТОЛЬКО валидным JSON без пояснений."
+  SKILL_ACTIVE="false"
 fi
+# --- Авто-переключение модели если тексты на кириллице ---
+_model_supports_cyrillic() {
+  local m; m="$(echo "$MODEL" | tr '[:upper:]' '[:lower:]')"
+  [[ "$m" == *qwen* || "$m" == *aya* || "$m" == *vikhr* || "$m" == *saiga* || "$m" == *mistral* ]]
+}
+
+_content_is_cyrillic() {
+  local body="" count=0
+  while IFS= read -r -d '' fp && (( count < 3 )); do
+    body+="$(tr -d '\r' < "$fp" | awk '/^---/{f++; if(f==2){next}} f<2{next} {print}' | head -c 1500)"
+    (( count++ ))
+  done < <(find "$RAW_JIRA" -name "*.md" -type f -print0)
+  local cyr
+  cyr="$(printf '%s' "$body" | "$PYTHON" -c 'import sys; t=sys.stdin.read(); print(sum(1 for c in t if "Ѐ"<=c<="ӿ"))')"
+  [[ "$cyr" =~ ^[0-9]+$ ]] && (( cyr > 100 ))
+}
+
+if ! _model_supports_cyrillic && _content_is_cyrillic; then
+  CYRILLIC_FALLBACK="qwen2.5:7b"
+  HAS_FALLBACK="$("$PYTHON" -c "
+import urllib.request, json
+try:
+  r = urllib.request.urlopen('http://localhost:11434/api/tags', timeout=3)
+  models = json.load(r).get('models', [])
+  print('yes' if any('qwen2.5' in m['name'] for m in models) else 'no')
+except: print('no')
+")"
+  if [[ "$HAS_FALLBACK" == "yes" ]]; then
+    warn "Модель ${MODEL} не поддерживает кириллицу — авто-переключение на ${CYRILLIC_FALLBACK}"
+    MODEL="$CYRILLIC_FALLBACK"
+    NUM_CTX=$(( (MAX_CHARS + 2048 + 511) / 512 * 512 ))
+  else
+    warn "Модель ${MODEL} не поддерживает кириллицу. Рекомендуется: ollama pull ${CYRILLIC_FALLBACK}"
+  fi
+fi
+
 COUNT_OK=0; COUNT_SKIP=0; COUNT_ERR=0
 
 log "Тикет: $JIRA | Модель: $MODEL | Лимит: ${MAX_CHARS} символов | Таймаут: ${TIMEOUT}с"
@@ -153,7 +191,7 @@ mark_processed() {
 }
 
 get_frontmatter() {
-  grep "^${2}:" "$1" | head -1 | sed "s/^${2}: *//" | tr -d '"'
+  grep "^${2}:" "$1" | head -1 | sed "s/^${2}: *//" | tr -d '"\r'
 }
 
 # --- один запрос → JSON со всеми измерениями ---
@@ -162,11 +200,20 @@ call_ollama_single() {
   local ref="$2"
   local doc_type="$3"
 
-  local spfa_instruction=""
-  [[ "$doc_type" == "spfa" ]] && spfa_instruction='
-8. "spfa": массив SPFA оценок вендора (если есть): [{id, vendor, status, findings, tco, source}]'
+  # Если загружен кастомный SKILL.md — используем только его схему без SA примера
+  local prompt
+  if [[ "${SKILL_ACTIVE:-false}" == "true" ]]; then
+    prompt="Извлеки знания ТОЛЬКО из текста документа ниже, строго следуя схеме из system prompt.
+НЕ генерируй информацию из других источников — только то, что явно присутствует в тексте.
+Верни ТОЛЬКО валидный JSON, без пояснений и markdown-блоков.
 
-  local prompt="Проанализируй текст документа и заполни JSON-структуру.
+ДОКУМЕНТ ($ref):
+$content"
+  else
+    local spfa_instruction=""
+    [[ "$doc_type" == "spfa" ]] && spfa_instruction='
+8. "spfa": массив SPFA оценок вендора (если есть): [{id, vendor, status, findings, tco, source}]'
+    prompt="Проанализируй текст документа и заполни JSON-структуру.
 Каждый элемент массива ДОЛЖЕН быть объектом с полями как в примере ниже.
 Если данных для категории нет — верни пустой массив [].
 Используй только роли людей, не имена.
@@ -184,24 +231,48 @@ call_ollama_single() {
 
 ДОКУМЕНТ ($ref, тип: $doc_type):
 $content"
+  fi
 
+  # format:"json" ломает кириллицу в qwen когда system prompt содержит JSON с русскими значениями
+  # Поэтому при SKILL_ACTIVE убираем format:json — модель и так следует схеме из system prompt
   local payload
-  payload="$(jq -n \
-    --arg model "$MODEL" \
-    --arg system "$SYSTEM_PROMPT" \
-    --arg prompt "$prompt" \
-    --argjson num_ctx "$NUM_CTX" \
-    '{model: $model, system: $system, prompt: $prompt, stream: true, format: "json", options: {temperature: 0.1, num_ctx: $num_ctx}}')"
+  if [[ "${SKILL_ACTIVE:-false}" == "true" ]]; then
+    payload="$(jq -n \
+      --arg model "$MODEL" \
+      --arg system "$SYSTEM_PROMPT" \
+      --arg prompt "$prompt" \
+      --argjson num_ctx "$NUM_CTX" \
+      '{model: $model, system: $system, prompt: $prompt, stream: true, options: {temperature: 0.1, num_ctx: $num_ctx}}')"
+  else
+    payload="$(jq -n \
+      --arg model "$MODEL" \
+      --arg system "$SYSTEM_PROMPT" \
+      --arg prompt "$prompt" \
+      --argjson num_ctx "$NUM_CTX" \
+      '{model: $model, system: $system, prompt: $prompt, stream: true, format: "json", options: {temperature: 0.1, num_ctx: $num_ctx}}')"
+  fi
 
   # флаги управления (проверяются внутри subshell → используем файлы)
   local skip_flag="$BRAIN_DIR/logs/.skip-$JIRA"
   local skipped_flag="$BRAIN_DIR/logs/.skipped-$JIRA"
+
+  # heartbeat: печатает elapsed каждые 30с — показывает что скрипт живой
+  local hb_start
+  hb_start="$(date +%s)"
+  (
+    while true; do
+      sleep 30
+      printf " [%ds…]" "$(( $(date +%s) - hb_start ))" >&2
+    done
+  ) &
+  local HB_PID=$!
 
   local full_response="" tok dots=0
   while IFS= read -r line; do
     if [[ -f "$skip_flag" ]]; then
       rm -f "$skip_flag"
       touch "$skipped_flag"
+      kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null
       printf "\n[skipped]\n" >&2
       return
     fi
@@ -213,6 +284,8 @@ $content"
   done < <(curl -s --max-time "$TIMEOUT" -X POST "$OLLAMA_URL" \
     -H "Content-Type: application/json" \
     -d "$payload")
+
+  kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null
   (( dots > 0 )) && printf "\n" >&2
 
   printf '%s' "$full_response"
@@ -220,8 +293,39 @@ $content"
 
 # --- JSON → markdown файлы (generic: works for any skill schema) ---
 json_to_files() {
-  local json="$1"
-  json="$(echo "$json" | sed -n '/^{/,/^}/p' | head -400)"
+  local raw="$1"
+  # Извлекаем JSON блок через Python: поддерживает ```json...``` фенсы и bare {}
+  local json
+  json="$(printf '%s' "$raw" | "$PYTHON" - << 'PYEXTRACT'
+import sys, re, json as _json
+text = sys.stdin.read()
+# 1) ищем ```json ... ``` или ``` ... ```
+m = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+if m:
+    candidate = m.group(1)
+else:
+    # 2) ищем внешний { ... } блок
+    start = text.find('{')
+    if start == -1:
+        sys.exit(0)
+    depth = 0; end = -1
+    for i, c in enumerate(text[start:], start):
+        if c == '{': depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                end = i; break
+    if end == -1:
+        sys.exit(0)
+    candidate = text[start:end+1]
+try:
+    _json.loads(candidate)
+    print(candidate)
+except Exception as e:
+    print(f'json-extract error: {e}', file=sys.stderr)
+    sys.exit(0)
+PYEXTRACT
+)"
   [[ -z "$json" ]] && return
 
   local py_script
@@ -315,7 +419,7 @@ while IFS= read -r -d '' filepath; do
 
   log "[$CURRENT/$TOTAL] Обрабатываю: $filename"
 
-  content="$(awk '/^---/{found++; if(found==2){skip=0; next}} found<2{next} {print}' "$filepath" | head -c $MAX_CHARS)"
+  content="$(tr -d '\r' < "$filepath" | awk '/^---/{found++; if(found==2){skip=0; next}} found<2{next} {print}' | head -c $MAX_CHARS)"
 
   if [[ -z "$(echo "$content" | tr -d '[:space:]')" ]]; then
     warn "Пустой контент — пропускаю"
