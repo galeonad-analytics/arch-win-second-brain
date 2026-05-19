@@ -294,13 +294,17 @@ $content"
 # --- JSON → markdown файлы (generic: works for any skill schema) ---
 json_to_files() {
   local raw="$1"
-  # Извлекаем JSON блок через Python: поддерживает ```json...``` фенсы и bare {}
-  local json
-  json="$(printf '%s' "$raw" | "$PYTHON" - << 'PYEXTRACT'
+
+  # Пишем Python-скрипт извлечения JSON во временный файл (pipe + heredoc конфликтуют)
+  local py_extract py_write
+  py_extract="$(mktemp).py"
+  py_write="$(mktemp).py"
+
+  cat > "$py_extract" << 'PYEXTRACT'
 import sys, re, json as _json
 
 def depth_find(text, start):
-    depth = 0; end = -1
+    depth = 0
     for i, c in enumerate(text[start:], start):
         if c == '{': depth += 1
         elif c == '}':
@@ -323,11 +327,11 @@ if m:
 # 2) если фенса нет или внутри не нашли — ищем в полном тексте
 if candidate is None:
     start = text.find('{')
-    if start == -1:
-        sys.exit(0)
-    candidate = depth_find(text, start)
-    if candidate is None:
-        sys.exit(0)
+    if start != -1:
+        candidate = depth_find(text, start)
+
+if candidate is None:
+    sys.exit(0)
 
 try:
     _json.loads(candidate)
@@ -336,12 +340,13 @@ except Exception as e:
     print(f'json-extract error: {e}', file=sys.stderr)
     sys.exit(0)
 PYEXTRACT
-)"
+
+  local json
+  json="$(printf '%s' "$raw" | "$PYTHON" "$py_extract" 2>/dev/null)"
+  rm -f "$py_extract"
   [[ -z "$json" ]] && return
 
-  local py_script
-  py_script="$(mktemp --suffix=.py)"
-  cat > "$py_script" << 'PYEOF'
+  cat > "$py_write" << 'PYEOF'
 import sys, json, os
 knowledge_dir = sys.argv[1]
 try:
@@ -350,7 +355,7 @@ except Exception as e:
   print(f'json parse error: {e}', file=sys.stderr)
   sys.exit(0)
 project = os.path.basename(knowledge_dir)
-HEADING_KEYS = ('title','name','role','question','concept','finding','decision','insight','method','action')
+HEADING_KEYS = ('title','name','role','question','concept','finding','decision','insight','method','action','quote','author')
 for key, items in data.items():
   if not isinstance(items, list) or not items:
     continue
@@ -382,8 +387,8 @@ for key, items in data.items():
 PYEOF
 
   local result
-  result="$(echo "$json" | "$PYTHON" "$py_script" "$KNOWLEDGE_JIRA" 2>/dev/null)"
-  rm -f "$py_script"
+  result="$(printf '%s' "$json" | "$PYTHON" "$py_write" "$KNOWLEDGE_JIRA" 2>/dev/null)"
+  rm -f "$py_write"
 
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
