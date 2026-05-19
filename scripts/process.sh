@@ -298,26 +298,37 @@ json_to_files() {
   local json
   json="$(printf '%s' "$raw" | "$PYTHON" - << 'PYEXTRACT'
 import sys, re, json as _json
-text = sys.stdin.read()
-# 1) ищем ```json ... ``` или ``` ... ```
-m = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
-if m:
-    candidate = m.group(1)
-else:
-    # 2) ищем внешний { ... } блок
-    start = text.find('{')
-    if start == -1:
-        sys.exit(0)
+
+def depth_find(text, start):
     depth = 0; end = -1
     for i, c in enumerate(text[start:], start):
         if c == '{': depth += 1
         elif c == '}':
             depth -= 1
             if depth == 0:
-                end = i; break
-    if end == -1:
+                return text[start:i+1]
+    return None
+
+text = sys.stdin.read()
+candidate = None
+
+# 1) ищем ```json ... ``` фенс — берём содержимое, ищем JSON через depth counting
+m = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+if m:
+    fenced = m.group(1)
+    start = fenced.find('{')
+    if start != -1:
+        candidate = depth_find(fenced, start)
+
+# 2) если фенса нет или внутри не нашли — ищем в полном тексте
+if candidate is None:
+    start = text.find('{')
+    if start == -1:
         sys.exit(0)
-    candidate = text[start:end+1]
+    candidate = depth_find(text, start)
+    if candidate is None:
+        sys.exit(0)
+
 try:
     _json.loads(candidate)
     print(candidate)
