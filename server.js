@@ -16,7 +16,7 @@ function loadEnv() {
 }
 let ENV = loadEnv();
 import { exec } from 'child_process';
-import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { totalmem } from 'os';
@@ -620,21 +620,39 @@ ${context.slice(0, 14000)}
     }
 
     // POST /api/analyze-for-skill — sample raw docs and suggest a skill via Ollama (streaming)
+    // DELETE /api/skill/:jira — delete project SKILL.md
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/skill/')) {
+      const jira = url.pathname.split('/').pop();
+      const skillPath = join(__dirname, 'knowledge', 'projects', jira, jira + '-SKILL.md');
+      if (!existsSync(skillPath)) return json(res, { ok: true, deleted: false });
+      unlinkSync(skillPath);
+      return json(res, { ok: true, deleted: true });
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/analyze-for-skill') {
       const { jira } = await getBody(req);
       if (!jira) return json(res, { error: 'jira обязателен' }, 400);
       const rawDir = join(__dirname, 'raw', jira);
       if (!existsSync(rawDir)) return json(res, { error: 'raw папка не найдена' }, 404);
 
-      // Sample first 2000 chars of body (skip frontmatter) from up to 5 files
-      const mdFiles = readdirSync(rawDir).filter(f => f.endsWith('.md')).slice(0, 5);
-      let samples = '';
+      // Sample up to 10 files, skip garbled (non-printable ratio > 30%), prefer larger files
+      const mdFiles = readdirSync(rawDir)
+        .filter(f => f.endsWith('.md'))
+        .map(f => ({ f, size: statSync(join(rawDir, f)).size }))
+        .sort((a, b) => b.size - a.size)
+        .map(x => x.f);
+      let samples = ''; let sampled = 0;
       for (const f of mdFiles) {
+        if (sampled >= 8) break;
         const raw = readFileSync(join(rawDir, f), 'utf8');
         const body = raw.replace(/^---[\s\S]+?---\n?/, '').trim();
-        if (body.length > 100) samples += `\n\n### ${f}\n${body.slice(0, 2000)}`;
+        if (body.length < 200) continue;
+        const garbled = (body.match(/[�\x00-\x08\x0E-\x1F]/g) || []).length / body.length;
+        if (garbled > 0.05) continue; // skip files with >5% garbage chars
+        samples += `\n\n### ${f}\n${body.slice(0, 1500)}`;
+        sampled++;
       }
-      if (!samples.trim()) return json(res, { error: 'нет контента в raw файлах' }, 400);
+      if (!samples.trim()) return json(res, { error: 'нет читаемого контента в raw файлах' }, 400);
 
       const prompt = `Ты редактор базы знаний. Проанализируй отрывки документов проекта "${jira}" и напиши SKILL.md — инструкцию для LLM по извлечению знаний.
 

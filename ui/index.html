@@ -507,6 +507,9 @@
           <button class="btn btn-ghost" onclick="analyzeForSkill()" id="btn-analyze-skill">
             <span>⇒</span> Проанализировать и предложить скилл
           </button>
+          <button class="btn btn-ghost btn-sm" onclick="deleteSkill()" id="btn-delete-skill" style="color:var(--red,#e55);display:none">
+            <span>✕</span> Удалить скилл
+          </button>
           <button class="btn btn-ghost btn-sm" onclick="skipSkillStep()" style="color:var(--text3)">
             Пропустить шаг
           </button>
@@ -1548,6 +1551,7 @@ async function testClaude() {
 async function checkSkillStatus(jira) {
   const badge = document.getElementById('skill-status-badge');
   const textarea = document.getElementById('skill-textarea');
+  const btnDelete = document.getElementById('btn-delete-skill');
   if (!badge) return;
   badge.textContent = 'проверяю...';
   const r = await fetch(`${API}/skill/${jira}`).catch(() => null);
@@ -1558,11 +1562,31 @@ async function checkSkillStatus(jira) {
     badge.textContent = '✓ ' + fname + ' сохранён';
     badge.style.color = 'var(--green)';
     if (data.content && textarea && !textarea.value) textarea.value = data.content;
+    if (btnDelete) btnDelete.style.display = '';
   } else {
     badge.textContent = 'скилл не создан — будет использован дефолтный';
     badge.style.color = 'var(--text3)';
     if (textarea) textarea.value = '';
+    if (btnDelete) btnDelete.style.display = 'none';
   }
+}
+
+async function deleteSkill() {
+  const jira = document.getElementById('ingest-jira').value.trim() || state.project;
+  if (!jira) return;
+  if (!confirm(`Удалить ${jira}-SKILL.md?`)) return;
+  const btn = document.getElementById('btn-delete-skill');
+  btn.disabled = true;
+  const r = await fetch(`${API}/skill/${jira}`, { method: 'DELETE' }).catch(() => null);
+  const data = r ? await r.json().catch(() => ({})) : {};
+  if (data.ok) {
+    const textarea = document.getElementById('skill-textarea');
+    if (textarea) textarea.value = '';
+    btn.style.display = 'none';
+    const badge = document.getElementById('skill-status-badge');
+    if (badge) { badge.textContent = 'скилл удалён — будет использован дефолтный'; badge.style.color = 'var(--text3)'; }
+  }
+  btn.disabled = false;
 }
 
 async function analyzeForSkill() {
