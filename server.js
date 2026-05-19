@@ -156,6 +156,20 @@ function getKnowledgeContext(jira) {
   return ctx;
 }
 
+const activeProcesses = new Map(); // key: 'ingest-JIRA' | 'process-JIRA' → child
+
+function killChild(key) {
+  const child = activeProcesses.get(key);
+  if (!child) return false;
+  if (process.platform === 'win32') {
+    exec(`taskkill /F /T /PID ${child.pid}`, () => {});
+  } else {
+    child.kill('SIGTERM');
+  }
+  activeProcesses.delete(key);
+  return true;
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
@@ -193,9 +207,11 @@ const server = createServer(async (req, res) => {
       if (!jira || !srcPath) return json(res, { error: 'jira и path обязательны' }, 400);
       cors(res); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Transfer-Encoding': 'chunked' });
       const child = exec(`bash "${join(__dirname, 'scripts', 'ingest.sh')}" "${jira}" "${srcPath}"`);
+      const ingestKey = `ingest-${jira}`;
+      activeProcesses.set(ingestKey, child);
       child.stdout.on('data', d => res.write(d));
       child.stderr.on('data', d => res.write(d));
-      child.on('close', code => res.end(`\n[exit ${code}]`));
+      child.on('close', code => { activeProcesses.delete(ingestKey); res.end(`\n[exit ${code}]`); });
       return;
     }
 
@@ -207,10 +223,30 @@ const server = createServer(async (req, res) => {
       const _maxChars = String(ENV.MAX_CHARS || computeAutoMaxChars(_ollamaModel));
       const child = exec(`bash "${join(__dirname, 'scripts', 'process.sh')}" "${jira}"`,
         { env: { ...process.env, OLLAMA_MODEL: _ollamaModel, MAX_CHARS: _maxChars } });
+      const processKey = `process-${jira}`;
+      activeProcesses.set(processKey, child);
       child.stdout.on('data', d => res.write(d));
       child.stderr.on('data', d => res.write(d));
-      child.on('close', code => res.end(`\n[exit ${code}]`));
+      child.on('close', code => { activeProcesses.delete(processKey); res.end(`\n[exit ${code}]`); });
       return;
+    }
+
+    // POST /api/stop/:type/:jira — остановить ingest или process
+    if (req.method === 'POST' && url.pathname.startsWith('/api/stop/')) {
+      const parts = url.pathname.split('/').filter(Boolean);
+      const type = parts[2]; const jira = parts[3];
+      if (!type || !jira) return json(res, { error: 'type и jira обязательны' }, 400);
+      const stopped = killChild(`${type}-${jira}`);
+      return json(res, { ok: stopped, message: stopped ? 'процесс остановлен' : 'нет активного процесса' });
+    }
+
+    // POST /api/skip/:jira — пропустить текущий файл в process
+    if (req.method === 'POST' && url.pathname.startsWith('/api/skip/')) {
+      const jira = url.pathname.split('/').pop();
+      if (!jira) return json(res, { error: 'jira обязателен' }, 400);
+      const flagPath = join(__dirname, 'logs', `.skip-${jira}`);
+      writeFileSync(flagPath, '');
+      return json(res, { ok: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/reprocess') {

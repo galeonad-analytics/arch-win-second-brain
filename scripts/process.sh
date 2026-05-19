@@ -187,8 +187,18 @@ $content"
     --argjson num_ctx "$NUM_CTX" \
     '{model: $model, system: $system, prompt: $prompt, stream: true, format: "json", options: {temperature: 0.1, num_ctx: $num_ctx}}')"
 
+  # флаги управления (проверяются внутри subshell → используем файлы)
+  local skip_flag="$BRAIN_DIR/logs/.skip-$JIRA"
+  local skipped_flag="$BRAIN_DIR/logs/.skipped-$JIRA"
+
   local full_response="" tok dots=0
   while IFS= read -r line; do
+    if [[ -f "$skip_flag" ]]; then
+      rm -f "$skip_flag"
+      touch "$skipped_flag"
+      printf "\n[skipped]\n" >&2
+      return
+    fi
     tok="$(printf '%s' "$line" | jq -r '.response // empty' 2>/dev/null)"
     if [[ -n "$tok" ]]; then
       full_response+="$tok"
@@ -302,6 +312,17 @@ while IFS= read -r -d '' filepath; do
   response="$(call_ollama_single "$content" "$ref" "$doc_type")"
   t_end="$(date +%s)"
   elapsed=$(( t_end - t_start ))
+
+  # Проверяем: был ли запрошен пропуск файла
+  if [[ -f "$BRAIN_DIR/logs/.skipped-$JIRA" ]]; then
+    rm -f "$BRAIN_DIR/logs/.skipped-$JIRA"
+    warn "  Пропущен по запросу пользователя: $filename"
+    tee_log "[SKIP-REQ] file=$filename elapsed=${elapsed}s"
+    ((COUNT_SKIP++))
+    mark_processed "$filepath"
+    echo ""
+    continue
+  fi
 
   if [[ -z "$response" ]]; then
     warn "  Таймаут или пустой ответ (${elapsed}с) — пропускаю: $filename"

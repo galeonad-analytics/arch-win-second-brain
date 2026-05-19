@@ -476,7 +476,7 @@
       <div class="card">
         <div class="card-title">⊕ Новый проект</div>
         <div class="field">
-          <label>Jira тикет</label>
+          <label>Project Label</label>
           <input type="text" id="ingest-jira" placeholder="ARCH-123" />
         </div>
         <div class="field">
@@ -489,6 +489,12 @@
           </button>
           <button class="btn btn-ghost" onclick="runProcess()" id="btn-process" style="display:none">
             <span>▶</span> Обработать через Ollama
+          </button>
+          <button class="btn btn-danger" onclick="stopOperation()" id="btn-stop" style="display:none">
+            <span>■</span> Стоп
+          </button>
+          <button class="btn" onclick="skipCurrentFile()" id="btn-skip" style="display:none;background:rgba(245,166,35,0.1);color:var(--amber);border:1px solid rgba(245,166,35,0.3)">
+            <span>⇥</span> Пропустить файл
           </button>
         </div>
         <div class="terminal" id="terminal-ingest"></div>
@@ -900,15 +906,43 @@ function showView(view) {
   if (view === 'skills') loadSkillsList();
 }
 
+// === STOP / SKIP ===
+var _activeOpType = null; var _activeOpJira = null;
+
+function setRunning(type, jira) {
+  _activeOpType = type; _activeOpJira = jira;
+  document.getElementById('btn-stop').style.display = 'inline-flex';
+  if (type === 'process') document.getElementById('btn-skip').style.display = 'inline-flex';
+}
+function setIdle() {
+  _activeOpType = null; _activeOpJira = null;
+  document.getElementById('btn-stop').style.display = 'none';
+  document.getElementById('btn-skip').style.display = 'none';
+}
+
+async function stopOperation() {
+  if (!_activeOpType || !_activeOpJira) return;
+  await fetch(`${API}/stop/${_activeOpType}/${_activeOpJira}`, { method: 'POST' });
+  document.getElementById('terminal-ingest').textContent += '\n[остановлено пользователем]\n';
+  setIdle();
+}
+
+async function skipCurrentFile() {
+  if (!_activeOpJira) return;
+  await fetch(`${API}/skip/${_activeOpJira}`, { method: 'POST' });
+  document.getElementById('terminal-ingest').textContent += '\n[пропуск текущего файла...]\n';
+}
+
 // === INGEST ===
 async function runIngest() {
   const jira = document.getElementById('ingest-jira').value.trim();
   const path = document.getElementById('ingest-path').value.trim();
-  if (!jira || !path) return alert('Укажи Jira тикет и путь к папке');
+  if (!jira || !path) return alert('Укажи Project Label и путь к папке');
   const btn = document.getElementById('btn-ingest');
   const term = document.getElementById('terminal-ingest');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Загружаю...';
   term.className = 'terminal visible'; term.textContent = '';
+  setRunning('ingest', jira);
 
   const r = await fetch(`${API}/ingest`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({jira,path}) });
   const reader = r.body.getReader(); const decoder = new TextDecoder();
@@ -919,8 +953,8 @@ async function runIngest() {
     term.textContent += colorize(chunk);
     term.scrollTop = term.scrollHeight;
   }
+  setIdle();
   btn.disabled = false; btn.innerHTML = '<span>⊕</span> Загрузить и конвертировать';
-  // Показываем кнопку обработки всегда — даже если были ошибки конвертации
   const procBtn = document.getElementById('btn-process');
   procBtn.style.display = 'inline-flex';
   procBtn.setAttribute('data-jira', jira);
@@ -935,6 +969,7 @@ async function runProcess() {
   const term = document.getElementById('terminal-ingest');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Обрабатываю...';
   term.className = 'terminal visible';
+  setRunning('process', jira);
 
   const progressBlock = document.getElementById('progress-block');
   const progressFill = document.getElementById('progress-fill');
@@ -954,7 +989,6 @@ async function runProcess() {
     term.textContent += chunk;
     term.scrollTop = term.scrollHeight;
 
-    // Парсим [X/Y] из вывода process.sh
     var match = chunk.match(/\[(\d+)\/(\d+)\]/);
     if (match) {
       current = parseInt(match[1]);
@@ -962,8 +996,6 @@ async function runProcess() {
       var pct = Math.round((current / total) * 100);
       if (progressFill) progressFill.style.width = pct + '%';
       if (progressText) progressText.textContent = 'Файл ' + current + ' из ' + total + ' (' + pct + '%)';
-
-      // ETA
       if (current > 1) {
         var elapsed = (Date.now() - startTime) / 1000;
         var perFile = elapsed / current;
@@ -973,14 +1005,13 @@ async function runProcess() {
         if (progressEta) progressEta.textContent = 'осталось ~' + (mins > 0 ? mins + 'м ' : '') + secs + 'с';
       }
     }
-
-    // Финал
     if (chunk.includes('=== Готово ===')) {
       if (progressFill) progressFill.style.width = '100%';
       if (progressText) progressText.textContent = '✓ Обработка завершена';
       if (progressEta) progressEta.textContent = '';
     }
   }
+  setIdle();
   btn.disabled = false; btn.innerHTML = '<span>▶</span> Обработать через Ollama';
   await loadProjects(); renderProjectsList(); renderOverview();
 }
