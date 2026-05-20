@@ -263,11 +263,17 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/chat') {
-      const { jira, question, history } = await getBody(req);
-      if (!jira || !question) return json(res, { error: 'jira и question обязательны' }, 400);
-      const context = getKnowledgeContext(jira);
+      const { jira, jiras, question, history } = await getBody(req);
+      const projectList = (jiras && jiras.length) ? jiras : (jira ? [jira] : []);
+      if (!projectList.length || !question) return json(res, { error: 'jira/jiras и question обязательны' }, 400);
+      let context = '';
+      for (const j of projectList) {
+        const c = getKnowledgeContext(j);
+        if (c) context += `\n\n=== Проект ${j} ===\n${c}`;
+      }
+      const projectLabel = projectList.join(', ');
       const prompt = `Ты архитектурный ассистент Solution Architect в телеком IT-компании.
-Используй ТОЛЬКО информацию из базы знаний проекта ${jira}.
+Используй ТОЛЬКО информацию из базы знаний проектов: ${projectLabel}.
 
 ПРАВИЛА ОТВЕТА:
 - Отвечай по-русски, структурированно
@@ -277,7 +283,7 @@ const server = createServer(async (req, res) => {
 - Не придумывай факты которых нет в документах
 - Отвечай полностью, не обрезай ответ
 
-База знаний проекта ${jira}:
+База знаний:
 ${context.slice(0, 14000)}
 
 Вопрос: ${question}`;
@@ -297,13 +303,19 @@ ${context.slice(0, 14000)}
 
     if (req.method === 'POST' && url.pathname === '/api/artifact') {
       const body = await getBody(req);
-      const { jira, template, section } = body;
-      if (!jira || !template) return json(res, { error: 'jira и template обязательны' }, 400);
-      const context = getKnowledgeContext(jira);
-      const tmplPath = join(__dirname, 'templates', template + '.md');
-      const tmplContent = existsSync(tmplPath) ? readFileSync(tmplPath, 'utf8').slice(0, 3000) : '';
+      const { jira, jiras, template, section } = body;
+      const projectList = (jiras && jiras.length) ? jiras : (jira ? [jira] : []);
+      if (!projectList.length) return json(res, { error: 'jira/jiras обязательны' }, 400);
+      let context = '';
+      for (const j of projectList) {
+        const c = getKnowledgeContext(j);
+        if (c) context += `\n\n=== Проект ${j} ===\n${c}`;
+      }
+      const projectLabel = projectList.join(', ');
+      const tmplPath = template ? join(__dirname, 'templates', template + '.md') : null;
+      const tmplContent = (tmplPath && existsSync(tmplPath)) ? readFileSync(tmplPath, 'utf8').slice(0, 3000) : '';
       const sectionNote = section ? `Сфокусируйся на разделе: "${section}".` : 'Заполни все разделы шаблона.';
-      const prompt = `Ты Solution Architect. На основе базы знаний проекта ${jira} помоги заполнить архитектурный документ.\n\n${sectionNote}\n\nШаблон документа:\n${tmplContent}\n\nБаза знаний проекта:\n${context.slice(0, 10000)}\n\nСгенерируй контент для указанного раздела на основе знаний из базы. Отвечай по-русски. Если данных недостаточно — укажи что именно нужно уточнить.`;
+      const prompt = `Ты Solution Architect. На основе базы знаний проектов ${projectLabel} помоги заполнить архитектурный документ.\n\n${sectionNote}\n\nШаблон документа:\n${tmplContent}\n\nБаза знаний:\n${context.slice(0, 10000)}\n\nСгенерируй контент для указанного раздела на основе знаний из базы. Отвечай по-русски. Если данных недостаточно — укажи что именно нужно уточнить.`;
       cors(res); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Transfer-Encoding': 'chunked' });
       try {
         const r = await fetch('http://localhost:11434/api/generate', {

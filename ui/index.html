@@ -239,6 +239,17 @@
   .terminal .err { color: var(--red); }
   .terminal .info { color: var(--cyan); }
 
+  /* Project chips (multi-select) */
+  .project-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 28px; }
+  .proj-chip {
+    padding: 4px 12px; border-radius: 20px;
+    border: 1px solid var(--border); background: var(--surface2);
+    color: var(--text2); cursor: pointer; font-size: 12px;
+    font-family: var(--mono); transition: all 0.15s;
+  }
+  .proj-chip:hover { border-color: var(--border2); color: var(--text); }
+  .proj-chip.selected { background: rgba(124,106,247,0.15); border-color: var(--accent); color: var(--accent2); }
+
   /* Chat */
   .chat-messages {
     min-height: 200px;
@@ -596,10 +607,8 @@
           <span style="font-size:10px;color:var(--text3);font-weight:400" id="active-model-badge">llama3.1:8b</span>
         </div>
         <div class="field">
-          <label>Проект</label>
-          <select id="chat-jira">
-            <option value="">— выберите проект —</option>
-          </select>
+          <label>Проекты <span style="color:var(--text3);font-size:10px">(можно выбрать несколько)</span></label>
+          <div class="project-chips" id="chat-projects"></div>
         </div>
         <div class="chat-messages" id="chat-messages">
           <div class="empty">Задайте вопрос по проекту</div>
@@ -625,10 +634,8 @@
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
           <div class="field">
-            <label>Проект</label>
-            <select id="artifact-jira" onchange="updateArtifactContext()">
-              <option value="">— проект —</option>
-            </select>
+            <label>Проекты <span style="color:var(--text3);font-size:10px">(можно выбрать несколько)</span></label>
+            <div class="project-chips" id="artifact-projects"></div>
           </div>
           <div class="field">
             <label>Тип артефакта</label>
@@ -788,20 +795,48 @@ function renderProjectsList() {
 }
 
 function populateSelects() {
+  // skipped — single select
   const opts = state.projects.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
-  ['skipped-jira','chat-jira','artifact-jira'].forEach(id => {
-    const el = document.getElementById(id);
-    const prev = el.value;
-    el.innerHTML = '<option value="">— выберите проект —</option>' + opts;
-    if (prev) el.value = prev;
-  });
+  const skippedEl = document.getElementById('skipped-jira');
+  if (skippedEl) {
+    const prev = skippedEl.value;
+    skippedEl.innerHTML = '<option value="">— выберите проект —</option>' + opts;
+    if (prev) skippedEl.value = prev;
+  }
+
+  // chat & artifact — chips
+  renderProjectChips('chat-projects', state.projects);
+  renderProjectChips('artifact-projects', state.projects);
+
   const tmplOpts = state.templates.map(t => `<option value="${t.name}">${t.name}</option>`).join('');
   document.getElementById('artifact-type').innerHTML = '<option value="">— шаблон —</option>' + tmplOpts;
+
+  // auto-select current project
   if (state.project) {
-    ['skipped-jira','chat-jira','artifact-jira'].forEach(id => {
-      document.getElementById(id).value = state.project;
-    });
+    if (skippedEl) skippedEl.value = state.project;
+    autoSelectChip('chat-projects', state.project);
+    autoSelectChip('artifact-projects', state.project);
   }
+}
+
+function renderProjectChips(containerId, projects) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const prev = getSelectedChips(containerId);
+  container.innerHTML = projects.map(p =>
+    `<button class="proj-chip${prev.includes(p.name) ? ' selected' : ''}" data-jira="${p.name}" onclick="toggleChip(this)">${p.name}</button>`
+  ).join('');
+}
+
+function toggleChip(el) { el.classList.toggle('selected'); }
+
+function getSelectedChips(containerId) {
+  return [...document.querySelectorAll(`#${containerId} .proj-chip.selected`)].map(el => el.dataset.jira);
+}
+
+function autoSelectChip(containerId, jira) {
+  const chip = document.querySelector(`#${containerId} [data-jira="${jira}"]`);
+  if (chip) chip.classList.add('selected');
 }
 
 function renderOverview() {
@@ -1086,10 +1121,10 @@ async function reprocessSelected() {
 
 // === CHAT ===
 async function sendChat() {
-  const jira = document.getElementById('chat-jira').value;
+  const jiras = getSelectedChips('chat-projects');
   const question = document.getElementById('chat-input').value.trim();
-  if (!jira || !question) return;
-  selectProject(jira);
+  if (!jiras.length || !question) return alert('Выбери хотя бы один проект и введи вопрос');
+  if (jiras.length === 1) selectProject(jiras[0]);
 
   const msgs = document.getElementById('chat-messages');
   if (msgs.querySelector('.empty')) msgs.innerHTML = '';
@@ -1101,7 +1136,7 @@ async function sendChat() {
   msgs.innerHTML += `<div class="msg msg-ai" id="msg-pending">...</div>`;
   msgs.scrollTop = msgs.scrollHeight;
 
-  const r = await fetch(`${API}/chat`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({jira, question}) });
+  const r = await fetch(`${API}/chat`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({jiras, question}) });
   const text = await r.text();
   document.getElementById('msg-pending').id = '';
   var lastMsg = document.querySelector('.msg-ai:last-child');
@@ -1123,10 +1158,10 @@ async function sendChat() {
 
 // === CHAT CLAUDE ===
 async function sendChatClaude() {
-  const jira = document.getElementById('chat-jira').value;
+  const jiras = getSelectedChips('chat-projects');
   const question = document.getElementById('chat-input').value.trim();
-  if (!jira || !question) return;
-  selectProject(jira);
+  if (!jiras.length || !question) return alert('Выбери хотя бы один проект и введи вопрос');
+  if (jiras.length === 1) selectProject(jiras[0]);
 
   const msgs = document.getElementById('chat-messages');
   if (msgs.querySelector('.empty')) msgs.innerHTML = '';
@@ -1138,11 +1173,15 @@ async function sendChatClaude() {
   msgs.innerHTML += '<div class="msg msg-ai" id="msg-pending-claude">...</div>';
   msgs.scrollTop = msgs.scrollHeight;
 
-  const kR = await fetch(API + '/knowledge/' + jira).catch(() => null);
-  const knowledge = kR ? await kR.text().catch(() => '') : '';
+  let knowledge = '';
+  for (const j of jiras) {
+    const kR = await fetch(API + '/knowledge/' + j).catch(() => null);
+    const k = kR ? await kR.text().catch(() => '') : '';
+    if (k) knowledge += `\n\n=== Проект ${j} ===\n` + k;
+  }
 
   var systemP = 'Ты Solution Architect в телеком IT-компании. Отвечаешь по-русски, конкретно, со ссылками на источники [[filename]] из базы знаний проекта.';
-  var userP = 'Проект: ' + jira + '\n\nБаза знаний:\n' + knowledge.slice(0, 12000) + '\n\nВопрос: ' + question;
+  var userP = 'Проекты: ' + jiras.join(', ') + '\n\nБаза знаний:\n' + knowledge.slice(0, 12000) + '\n\nВопрос: ' + question;
 
   try {
     const response = await fetch(API + '/claude', {
@@ -1201,15 +1240,15 @@ function selectSection(el, section) {
 }
 
 function updateArtifactContext() {
-  const jira = document.getElementById('artifact-jira').value;
-  if (jira) selectProject(jira);
+  const jiras = getSelectedChips('artifact-projects');
+  if (jiras.length === 1) selectProject(jiras[0]);
 }
 
 async function generateArtifact() {
-  const jira = document.getElementById('artifact-jira').value;
+  const jiras = getSelectedChips('artifact-projects');
   const template = document.getElementById('artifact-type').value;
   const question = document.getElementById('artifact-question').value.trim();
-  if (!jira) return alert('Выбери проект');
+  if (!jiras.length) return alert('Выбери хотя бы один проект');
 
   const btn = document.getElementById('btn-artifact');
   const out = document.getElementById('artifact-output');
@@ -1218,7 +1257,7 @@ async function generateArtifact() {
 
   const r = await fetch(`${API}/artifact`, {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ jira, template: template || undefined, section: state.selectedSection, question: question || undefined })
+    body: JSON.stringify({ jiras, template: template || undefined, section: state.selectedSection, question: question || undefined })
   });
   const text = await r.text();
   if (typeof marked !== 'undefined') {
@@ -1275,10 +1314,10 @@ function renderCustomSections(sections) {
 
 // === CLAUDE API ===
 async function generateArtifactClaude() {
-  const jira = document.getElementById('artifact-jira').value;
+  const jiras = getSelectedChips('artifact-projects');
   const template = document.getElementById('artifact-type').value;
   const question = document.getElementById('artifact-question').value.trim();
-  if (!jira) return alert('Выбери проект');
+  if (!jiras.length) return alert('Выбери хотя бы один проект');
 
   const btn = document.getElementById('btn-artifact-claude');
   const out = document.getElementById('artifact-output');
@@ -1302,18 +1341,22 @@ async function generateArtifactClaude() {
     tmplContent = (td.content || '').slice(0, 3000);
   }
 
-  // Получаем knowledge context через наш API
-  const kR = await fetch(`${API}/knowledge/${jira}`).catch(() => null);
-  const knowledge = kR ? await kR.text().catch(() => '') : '';
+  // Получаем knowledge context для всех выбранных проектов
+  let knowledge = '';
+  for (const j of jiras) {
+    const kR = await fetch(`${API}/knowledge/${j}`).catch(() => null);
+    const k = kR ? await kR.text().catch(() => '') : '';
+    if (k) knowledge += `\n\n=== Проект ${j} ===\n` + k;
+  }
 
   const sectionNote = state.selectedSection ? `Сфокусируйся на разделе: "${state.selectedSection}".` : '';
   var systemPrompt = 'Ты опытный Solution Architect в телеком IT-компании. Работаешь по процессу EACMF. Помогаешь заполнять архитектурные артефакты: HLD, HLIS, AN, SPFA, BRD. Отвечаешь по-русски, конкретно, со ссылками на источники из базы знаний.';
 
-  var parts2 = ['Проект: ' + jira];
+  var parts2 = ['Проекты: ' + jiras.join(', ')];
   if (sectionNote) parts2.push(sectionNote);
   if (question) parts2.push('Задача: ' + question);
   if (tmplName && tmplContent) parts2.push('Шаблон (' + tmplName + '):\n' + tmplContent);
-  parts2.push('\nБаза знаний проекта:\n' + knowledge.slice(0, 12000));
+  parts2.push('\nБаза знаний:\n' + knowledge.slice(0, 12000));
   parts2.push('Сгенерируй конкретный текст для документа. Если данных недостаточно — укажи что нужно уточнить.');
   var userPrompt = parts2.join('\n');
 
