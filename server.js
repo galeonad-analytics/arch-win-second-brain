@@ -728,6 +728,28 @@ ${samples.slice(0, 5000)}
       return;
     }
 
+    // POST /api/skill/:jira/promote — copy project SKILL.md → skills/<name>/SKILL.md
+    if (req.method === 'POST' && /^\/api\/skill\/[^/]+\/promote$/.test(url.pathname)) {
+      const jira = url.pathname.split('/')[3];
+      const { targetName } = await getBody(req);
+      const name = (targetName || jira).replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+      const srcPath = join(__dirname, 'knowledge', 'projects', jira, jira + '-SKILL.md');
+      if (!existsSync(srcPath)) return json(res, { error: 'project skill not found' }, 404);
+      const destDir = join(__dirname, 'skills', name);
+      mkdirSync(destDir, { recursive: true });
+      const content = readFileSync(srcPath, 'utf8');
+      writeFileSync(join(destDir, 'SKILL.md'), content);
+      const readme = join(__dirname, 'skills', 'README.md');
+      const entry = `- [${name}](${name}/SKILL.md)\n`;
+      if (existsSync(readme)) {
+        const existing = readFileSync(readme, 'utf8');
+        if (!existing.includes(name + '/SKILL.md')) writeFileSync(readme, existing + entry);
+      } else {
+        writeFileSync(readme, `# Skills\n\n${entry}`);
+      }
+      return json(res, { ok: true, name });
+    }
+
     // POST /api/save-skill — save project SKILL.md
     if (req.method === 'POST' && url.pathname === '/api/save-skill') {
       const { jira, content } = await getBody(req);

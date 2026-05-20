@@ -507,12 +507,26 @@
           <button class="btn btn-ghost" onclick="analyzeForSkill()" id="btn-analyze-skill">
             <span>⇒</span> Проанализировать и предложить скилл
           </button>
+          <button class="btn btn-ghost btn-sm" onclick="promoteSkill()" id="btn-promote-skill" style="color:var(--cyan);display:none">
+            <span>↑</span> Сделать глобальным
+          </button>
           <button class="btn btn-ghost btn-sm" onclick="deleteSkill()" id="btn-delete-skill" style="color:var(--red,#e55);display:none">
             <span>✕</span> Удалить скилл
           </button>
           <button class="btn btn-ghost btn-sm" onclick="skipSkillStep()" style="color:var(--text3)">
             Пропустить шаг
           </button>
+        </div>
+        <div class="field" style="margin-bottom:12px" id="apply-skill-row">
+          <label style="font-size:11px;color:var(--text2);margin-bottom:6px;display:block">Применить существующий скилл:</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="global-skill-select" style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-family:var(--mono);font-size:12px">
+              <option value="">— нет доступных скиллов —</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" onclick="applyGlobalSkill()" id="btn-apply-skill">
+              <span>⇩</span> Применить
+            </button>
+          </div>
         </div>
         <div class="field">
           <label id="skill-file-label"><span id="skill-filename-label">JIRA-SKILL.md</span> — инструкция для модели (редактируется вручную)</label>
@@ -1552,8 +1566,29 @@ async function checkSkillStatus(jira) {
   const badge = document.getElementById('skill-status-badge');
   const textarea = document.getElementById('skill-textarea');
   const btnDelete = document.getElementById('btn-delete-skill');
+  const btnPromote = document.getElementById('btn-promote-skill');
   if (!badge) return;
   badge.textContent = 'проверяю...';
+
+  // Populate global skills dropdown
+  const selectEl = document.getElementById('global-skill-select');
+  if (selectEl) {
+    const sr = await fetch(`${API}/skills`).catch(() => null);
+    if (sr && sr.ok) {
+      const skills = await sr.json().catch(() => []);
+      const available = skills.filter(s => !s.builtin);
+      selectEl.innerHTML = available.length
+        ? '<option value="">— выбери глобальный скилл —</option>'
+        : '<option value="">— нет доступных скиллов —</option>';
+      available.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.name;
+        opt.textContent = s.name + (s.desc ? '  —  ' + s.desc.slice(0, 55) : '');
+        selectEl.appendChild(opt);
+      });
+    }
+  }
+
   const r = await fetch(`${API}/skill/${jira}`).catch(() => null);
   if (!r) { badge.textContent = ''; return; }
   const data = await r.json().catch(() => ({}));
@@ -1563,12 +1598,59 @@ async function checkSkillStatus(jira) {
     badge.style.color = 'var(--green)';
     if (data.content && textarea && !textarea.value) textarea.value = data.content;
     if (btnDelete) btnDelete.style.display = '';
+    if (btnPromote) btnPromote.style.display = '';
   } else {
     badge.textContent = 'скилл не создан — будет использован дефолтный';
     badge.style.color = 'var(--text3)';
     if (textarea) textarea.value = '';
     if (btnDelete) btnDelete.style.display = 'none';
+    if (btnPromote) btnPromote.style.display = 'none';
   }
+}
+
+async function promoteSkill() {
+  const jira = document.getElementById('ingest-jira').value.trim() || state.project;
+  if (!jira) return alert('Выбери проект');
+  const suggested = jira.toLowerCase() + '-domain';
+  const targetName = prompt('Имя глобального скилла:', suggested);
+  if (!targetName) return;
+  const btn = document.getElementById('btn-promote-skill');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  const r = await fetch(`${API}/skill/${jira}/promote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targetName })
+  }).catch(() => null);
+  const data = r ? await r.json().catch(() => ({})) : {};
+  if (data.ok) {
+    btn.innerHTML = '<span>✓</span> Сохранён как ' + data.name;
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = '<span>↑</span> Сделать глобальным'; }, 2500);
+    // refresh dropdown
+    await checkSkillStatus(jira);
+  } else {
+    alert('Ошибка: ' + (data.error || 'неизвестная'));
+    btn.disabled = false; btn.innerHTML = '<span>↑</span> Сделать глобальным';
+  }
+}
+
+async function applyGlobalSkill() {
+  const select = document.getElementById('global-skill-select');
+  const skillName = select?.value;
+  if (!skillName) return alert('Выбери скилл из списка');
+  const btn = document.getElementById('btn-apply-skill');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  const r = await fetch(`${API}/skills/${skillName}`).catch(() => null);
+  if (!r || !r.ok) {
+    btn.disabled = false; btn.innerHTML = '<span>⇩</span> Применить';
+    return alert('Не удалось загрузить скилл: ' + skillName);
+  }
+  const content = await r.text();
+  const textarea = document.getElementById('skill-textarea');
+  if (textarea) {
+    textarea.value = content;
+    textarea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  btn.disabled = false; btn.innerHTML = '<span>⇩</span> Применить';
 }
 
 async function deleteSkill() {
