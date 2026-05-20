@@ -388,7 +388,7 @@ PYEXTRACT
   [[ ! -s "$json_file" ]] && { rm -f "$json_file"; return; }
 
   cat > "$py_write" << 'PYEOF'
-import sys, json, os
+import sys, json, os, re
 knowledge_dir = sys.argv[1]
 try:
   data = json.loads(sys.stdin.buffer.read().decode('utf-8', errors='replace'))
@@ -397,16 +397,33 @@ except Exception as e:
   sys.exit(0)
 project = os.path.basename(knowledge_dir)
 HEADING_KEYS = ('title','name','role','question','concept','finding','decision','insight','method','action','quote','author','term','definition','theory')
+
+def _max_id_in_file(fp):
+  try:
+    with open(fp, 'r', encoding='utf-8') as fh:
+      nums = re.findall(r'^## [A-Za-z]+-(\d+)', fh.read(), re.MULTILINE)
+    return max((int(n) for n in nums), default=0)
+  except Exception:
+    return 0
+
+def _reindex(item_id, offset):
+  m = re.match(r'^([A-Za-z]+-?)(\d+)$', str(item_id))
+  if not m or offset == 0:
+    return item_id
+  return f"{m.group(1)}{int(m.group(2)) + offset:03d}"
+
 for key, items in data.items():
   if not isinstance(items, list) or not items:
     continue
   filename = key.replace('_', '-') + '.md'
   filepath = os.path.join(knowledge_dir, filename)
+  is_append = os.path.exists(filepath)
+  id_offset = _max_id_in_file(filepath) if is_append else 0
   lines = []
   for item in items:
     if not isinstance(item, dict):
       continue
-    item_id = str(item.get('id', '?'))
+    item_id = _reindex(str(item.get('id', '?')), id_offset)
     heading_key = next((k for k in HEADING_KEYS if item.get(k)), None)
     heading = str(item[heading_key]) if heading_key else item_id
     lines.append(f'## {item_id} {heading}')
@@ -422,7 +439,7 @@ for key, items in data.items():
     continue
   content = '\n'.join(lines)
   header_title = key.replace('_', ' ').title()
-  if os.path.exists(filepath):
+  if is_append:
     with open(filepath, 'a', encoding='utf-8') as f:
       f.write('\n---\n\n' + content)
     print(f'append:{filename}')
@@ -485,6 +502,25 @@ while IFS= read -r -d '' filepath; do
 
   if [[ -z "$(echo "$content" | tr -d '[:space:]')" ]]; then
     warn "Пустой контент — пропускаю"
+    mark_processed "$filepath"
+    ((COUNT_SKIP++))
+    continue
+  fi
+
+  # Фильтр гарблед-контента: PDF с битой кодировкой даёт <25% читаемых символов
+  readable_ratio="$(printf '%s' "$content" | "$PYTHON" -c "
+import sys
+text = sys.stdin.buffer.read().decode('utf-8', errors='replace')
+stripped = text.replace(' ','').replace('\n','').replace('\t','').replace('\r','')
+total = len(stripped)
+if total < 50:
+    print(100)
+else:
+    readable = sum(1 for c in stripped if c.isalpha() or c.isdigit())
+    print(int(readable * 100 // total))
+")"
+  if [[ "${readable_ratio:-100}" -lt 25 ]]; then
+    warn "  Гарблед контент (${readable_ratio}% читаемых символов) — пропускаю: $filename"
     mark_processed "$filepath"
     ((COUNT_SKIP++))
     continue
